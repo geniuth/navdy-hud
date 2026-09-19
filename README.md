@@ -171,38 +171,51 @@ MIN_X   2.0m    더 가까우면 u 가 발산해 화면 밖으로 나간다
 
 ## 화면
 
-실기기(640x480) 캡처다. 콤바이너 HUD 라 검은 부분은 투사되지 않는다.
+실기기(640x480) 캡처다. 콤바이너 HUD 라 검은 부분은 투사되지 않으므로 실제로는
+밝은 요소만 유리에 뜬다. 상하 1/6 이 비어 있는 것은 그 영역이 투사되지 않기
+때문이다.
 
 | 정속 주행 | 앞차 급감속 |
 |---|---|
-| ![](docs/captures/tune4-final.png) | ![](docs/captures/demo2-lead-braking.png) |
-| 차선 4개, 도로경계, 경로 띠, 앞차 거리 | 앞차가 감속하면 후미등처럼 붉게 |
+| ![](docs/captures/s1-cruise.png) | ![](docs/captures/s2-lead-braking.png) |
+| 좌측 점선 / 우측 실선, 경로 띠, 과속카메라 표지 | 앞차가 감속하면 붉게 |
 
-| 사각지대 비었음 | 사각지대 점유 |
+사각지대는 별도 기호 없이 그 쪽 차선을 물들인다.
+
+| 깜빡이 off — 노랑 | 그 방향 깜빡이 on — 빨강 |
 |---|---|
-| ![](docs/captures/demo3-bsd-clear.png) | ![](docs/captures/demo4-bsd-occupied.png) |
-| 깜빡이 켰을 때만 노란 화살표 | 옆차가 있으면 빨강 + "차량" |
+| ![](docs/captures/s3-bsd-yellow.png) | ![](docs/captures/s4-bsd-red.png) |
+| 옆에 차가 있다 | 지금 들어가면 위험하다 |
 
-| 과속카메라 | 신호 끊김 |
+| 구간단속 | 신호 끊김 |
 |---|---|
-| ![](docs/captures/demo5-speed-camera.png) | ![](docs/captures/demo8-link-lost.png) |
-| 제한속도 표지와 남은 거리 | 낡은 정보를 실시간으로 착각하지 않도록 전부 감춘다 |
+| ![](docs/captures/s6-section.png) | ![](docs/captures/s8-lost.png) |
+| 제한속도와 남은 거리 | 낡은 정보를 실시간으로 착각하지 않도록 전부 감춘다 |
 
-### 투영 조정 과정
+### 디자인 변경 과정
 
-같은 데이터인데 투영 상수만 바꾼 것이다. 왼쪽은 가상 카메라 1.2m / 90m 까지
-그리던 때로, 거리 대부분이 상단에 압축돼 별 모양이 되고 아래 30% 가 비었다.
+이전 캡처는 `docs/captures-old/` 에 남겼다. 주요 변경은 세 단계였다.
 
-| 이전 (camH 1.2m, 90m) | 이후 (camH 2.2m, 50m) |
+**투영** — 가상 카메라 1.2m / 90m 까지 그리던 때는 거리 대부분이 상단에
+압축돼 별 모양이 되고 아래 30% 가 비었다.
+
+| 이전 | 이후 |
 |---|---|
-| ![](docs/captures/demo1-cruise.png) | ![](docs/captures/tune4-final.png) |
+| ![](docs/captures-old/demo1-cruise.png) | ![](docs/captures/tune4-final.png) |
 
-경로도 선 한 줄에서 거리별 폭을 투영한 띠로 바꿨다. 한 줄로 그으면 굵기가
-일정해 수직 막대처럼 보이고 길로 읽히지 않는다.
+**경로** — 선 한 줄은 굵기가 일정해 수직 막대처럼 보인다. 거리별 폭을 투영한
+띠로 바꿨다.
 
-| 선 한 줄 | 원근 띠 |
+| 이전 | 이후 |
 |---|---|
-| ![](docs/captures/tune1-projection.png) | ![](docs/captures/tune2-path-band.png) |
+| ![](docs/captures-old/tune1-projection.png) | ![](docs/captures-old/tune2-path-band.png) |
+
+**차선과 사각지대** — 파란 차선을 흰색으로 바꾸고 점선/실선을 구분했다.
+사각지대는 화살표에서 차선 색으로 옮겼다.
+
+| 이전 (파란 차선 + 화살표) | 이후 (흰 차선, 차선이 물든다) |
+|---|---|
+| ![](docs/captures-old/demo4-bsd-occupied.png) | ![](docs/captures/s4-bsd-red.png) |
 
 ## 남은 일
 
