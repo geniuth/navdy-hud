@@ -140,6 +140,41 @@ MIN_X   2.0m    더 가까우면 u 가 발산해 화면 밖으로 나간다
 1.2m / 90m 로 뒀을 때는 3~90m 가 화면 y=168~323 에만 몰려 아래 30% 가 비고
 도로가 공중에 뜬 것처럼 보였다.
 
+## 화면
+
+실기기(640x480) 캡처다. 콤바이너 HUD 라 검은 부분은 투사되지 않는다.
+
+| 정속 주행 | 앞차 급감속 |
+|---|---|
+| ![](docs/captures/tune4-final.png) | ![](docs/captures/demo2-lead-braking.png) |
+| 차선 4개, 도로경계, 경로 띠, 앞차 거리 | 앞차가 감속하면 후미등처럼 붉게 |
+
+| 사각지대 비었음 | 사각지대 점유 |
+|---|---|
+| ![](docs/captures/demo3-bsd-clear.png) | ![](docs/captures/demo4-bsd-occupied.png) |
+| 깜빡이 켰을 때만 노란 화살표 | 옆차가 있으면 빨강 + "차량" |
+
+| 과속카메라 | 신호 끊김 |
+|---|---|
+| ![](docs/captures/demo5-speed-camera.png) | ![](docs/captures/demo8-link-lost.png) |
+| 제한속도 표지와 남은 거리 | 낡은 정보를 실시간으로 착각하지 않도록 전부 감춘다 |
+
+### 투영 조정 과정
+
+같은 데이터인데 투영 상수만 바꾼 것이다. 왼쪽은 가상 카메라 1.2m / 90m 까지
+그리던 때로, 거리 대부분이 상단에 압축돼 별 모양이 되고 아래 30% 가 비었다.
+
+| 이전 (camH 1.2m, 90m) | 이후 (camH 2.2m, 50m) |
+|---|---|
+| ![](docs/captures/demo1-cruise.png) | ![](docs/captures/tune4-final.png) |
+
+경로도 선 한 줄에서 거리별 폭을 투영한 띠로 바꿨다. 한 줄로 그으면 굵기가
+일정해 수직 막대처럼 보이고 길로 읽히지 않는다.
+
+| 선 한 줄 | 원근 띠 |
+|---|---|
+| ![](docs/captures/tune1-projection.png) | ![](docs/captures/tune2-path-band.png) |
+
 ## 남은 일
 
 - 실차 주행 사진(주간/야간)을 보고 색·굵기 확정. 화면 캡처는 프레임버퍼
