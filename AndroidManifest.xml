@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="kr.geniu.navdyhud"
+    android:versionCode="1"
+    android:versionName="0.1">
+  <uses-sdk android:minSdkVersion="22" android:targetSdkVersion="22" />
+  <uses-permission android:name="android.permission.BLUETOOTH" />
+  <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
+  <application android:label="CommaHUD" android:hardwareAccelerated="true">
+    <activity android:name=".HudActivity"
+              android:label="CommaHUD"
+              android:screenOrientation="landscape"
+              android:theme="@android:style/Theme.NoTitleBar.Fullscreen"
+              android:launchMode="singleTask">
+      <intent-filter>
+        <action android:name="android.intent.action.MAIN" />
+        <category android:name="android.intent.category.LAUNCHER" />
+      </intent-filter>
+    </activity>
+  </application>
+</manifest>
