@@ -28,21 +28,45 @@ public class Projection {
    *
    * 1.2m 로 뒀더니 3~90m 가 화면 y=168~323 사이에만 몰리고 아래 30% 가 비어
    * 도로가 공중에 뜬 것처럼 보였다. 높이를 올리면 같은 거리들이 세로로 더
-   * 넓게 퍼진다. 2.2m 면 3m 가 화면 하단(y≈437), 50m 가 지평선 근처(y≈162)에
-   * 놓여 화면을 고르게 채운다.
+   * 넓게 퍼진다.
+   *
+   * 상하 1/6 이 투사되지 않아 쓸 수 있는 높이가 480 에서 320 으로 줄었으므로
+   * 그만큼 낮춘다. 1.65m 면 3m 가 안전영역 바닥, 50m 가 지평선 근처에 놓인다.
    */
-  private static final float CAM_H = 2.2f;
+  private static final float CAM_H = 1.65f;
 
   /** 이보다 멀면 지평선에 뭉쳐 한 점이 된다. 멀리 그릴수록 근거리가 눌린다. */
   public static final float MAX_X = 50.0f;
 
+  /**
+   * 콤바이너에 제대로 투사되지 않는 상하 여백(화면 높이 비율).
+   *
+   * 실차에서 위아래 1/6 이 잘려 보인다. 그 밖으로 그린 것은 운전자에게 닿지
+   * 않으므로, 도로도 글자도 이 안쪽에만 배치한다.
+   */
+  public static final float SAFE_MARGIN = 1f / 6f;
+
   private float cx, horizon, focal, camH = CAM_H;
+  private float safeTop, safeBottom;
 
   public void setViewport(int w, int h) {
     cx = w * 0.5f;
-    horizon = h * 0.30f;
+    safeTop = h * SAFE_MARGIN;
+    safeBottom = h * (1f - SAFE_MARGIN);
+    // 지평선은 안전영역 안에서 위쪽 30% 지점에 둔다.
+    horizon = safeTop + (safeBottom - safeTop) * 0.30f;
     // 640 폭 기준 400px 초점거리가 실차에서 차선 간격이 자연스럽게 보이는 값.
     focal = w * 0.625f;
+  }
+
+  /** 안전영역 위쪽 경계. 글자를 이 아래에 둔다. */
+  public float safeTop() {
+    return safeTop;
+  }
+
+  /** 안전영역 아래쪽 경계. 자차 아이콘을 이 위에 둔다. */
+  public float safeBottom() {
+    return safeBottom;
   }
 
   public void setCameraHeight(float meters) {

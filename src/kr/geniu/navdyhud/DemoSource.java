@@ -81,14 +81,13 @@ public class DemoSource {
         case 1:   // 앞차 급감속 -> 후미등 빨강
           p.put("lead", lead(35f - 12f * t, 0f, -22f, -2.4f));
           break;
-        case 2:   // 좌측 깜빡이, 사각지대 비어있음 -> 노랑
-          p.put("leftBlinker", true);
-          p.put("leftBsd", false);
+        case 2:   // 사각지대 점유, 깜빡이 안 켬 -> 그 쪽 차선 노랑
+          p.put("leftBsd", true);
           p.put("lead", lead(48f, 0f, 0f, 0f));
           break;
-        case 3:   // 좌측 깜빡이, 사각지대 점유 -> 빨강
-          p.put("leftBlinker", true);
+        case 3:   // 사각지대 점유 + 그 방향 깜빡이 -> 그 쪽 차선 빨강
           p.put("leftBsd", true);
+          p.put("leftBlinker", true);
           p.put("lead", lead(48f, 0f, 0f, 0f));
           break;
         case 4:   // 과속카메라 접근 200m -> 40m
@@ -111,6 +110,9 @@ public class DemoSource {
         default:
           break;
       }
+      // 좌 점선 흰색(10), 우 실선 흰색(11). 색*10 + 0점선/1실선 규약.
+      p.put("laneL", 10);
+      p.put("laneR", 11);
       p.put("speed", speed);
       p.put("limit", scene == 5 ? 80 : 60);
     } catch (Exception ignored) {
