@@ -39,6 +39,14 @@ public class HudView extends View {
   private static final int COL_CAUTION     = Color.rgb(255, 200, 40);
   /** 위험. 지금 차선을 바꾸면 안 된다, 앞차가 급감속한다, 신호가 끊겼다. */
   private static final int COL_DANGER      = Color.rgb(255, 60, 60);
+  /**
+   * 검출된 차량.
+   *
+   * 회색이다. 다만 콤바이너에서 회색은 휘도가 낮아 주간에 먼저 사라지는
+   * 색이라, 중간 회색이 아니라 밝은 회색으로 둔다. 주간 주행에서 앞차가
+   * 안 보이면 이 값을 흰색까지 올리는 것으로 먼저 대응한다.
+   */
+  private static final int COL_OBJECT      = Color.rgb(200, 200, 200);
 
   // ---- 타이포: 속도가 1차 정보다 ----
 
@@ -68,6 +76,7 @@ public class HudView extends View {
   private final Paint speedPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
   private final Paint unitPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
   private final Paint labelPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+  private final Paint labelHalo = new Paint(Paint.ANTI_ALIAS_FLAG);
   private final Paint signPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
   private final Projection proj = new Projection();
   private final Path scratch = new Path();
@@ -82,6 +91,8 @@ public class HudView extends View {
   private volatile String linkState = "시작중";
   private volatile long packets = 0;
   private volatile long lastPacketMs = 0;
+  /** 이번 프레임의 자차 속도(km/h). 검출 차량 속도 계산에 쓴다. */
+  private int egoSpeed = 0;
 
   public HudView(Context c) {
     super(c);
@@ -98,6 +109,13 @@ public class HudView extends View {
 
     labelPaint.setColor(COL_ROAD);
     labelPaint.setTextSize(SZ_LABEL);
+
+    // 글자 둘레를 검게 두른다. 검은색은 투사되지 않으므로 경로 띠나 차선 위에
+    // 글자가 놓여도 둘레가 '빈 곳'이 되어 배경과 갈린다.
+    labelHalo.setStyle(Paint.Style.STROKE);
+    labelHalo.setStrokeWidth(4f);
+    labelHalo.setColor(Color.BLACK);
+    labelHalo.setTextSize(SZ_LABEL);
 
     signPaint.setColor(COL_ROAD);
     signPaint.setTextSize(SZ_SIGN);
@@ -133,6 +151,10 @@ public class HudView extends View {
     canvas.drawColor(Color.BLACK);
 
     JSONObject p = packet;
+    if (p != null) {
+      // 검출 차량의 속도를 상대속도에서 복원하는 데 쓴다.
+      egoSpeed = p.optInt("speed", 0);
+    }
     if (p == null) {
       labelPaint.setColor(COL_ROAD);
       canvas.drawText("링크: " + linkState, 16f, proj.safeTop() + SZ_LABEL, labelPaint);
@@ -148,8 +170,7 @@ public class HudView extends View {
       }
       drawLanes(canvas, p.optJSONArray("lanes"), p);
       drawPath(canvas, p.optJSONArray("path"));
-      drawLead(canvas, p.optJSONObject("lead2"), false);
-      drawLead(canvas, p.optJSONObject("lead"), true);
+      drawVehicles(canvas, p);
       drawSign(canvas, p, w);
     }
     drawEgo(canvas);
@@ -335,84 +356,143 @@ public class HudView extends View {
   // ---- 2. 인식한 차량 ----
 
   /**
-   * 앞차.
+   * openpilot 이 검출한 차량. 앞차, 그 앞차, 옆차선 차를 모두 같은 모양과
+   * 같은 색으로 그린다.
    *
-   * 색은 노란색이 아니라 흰색이다. 앞차가 있다는 것은 경고가 아니라 노면
-   * 사실이고, 노란색을 여기에 쓰면 사각지대 주의색과 구별되지 않는다.
-   * 실제로 감속 중일 때만 위험색으로 바뀌어 후미등처럼 동작한다.
+   * 종류마다 색을 바꾸면 색이 다시 의미를 잃는다. 어느 차인지는 화면 위
+   * 위치가 알려주므로 색은 "검출된 물체" 하나로 족하다. 급감속할 때만
+   * 위험색으로 바뀌어 후미등처럼 동작한다.
    *
-   * 주된 앞차와 두 번째 앞차는 투명도가 아니라 채움/외곽선으로 구분한다.
+   * 차체 바로 아래에 삼각형 커서를 두어 노면 위 어느 지점인지 못박고,
+   * 그 아래에 속도를 적는다. 차체만 있으면 거리감이 떠 보인다.
    */
   private static final float LEAD_MIN_PX = 26f;
-  private static final float LEAD2_MIN_PX = 20f;
-  private static final float LEAD2_MAX_M = 60f;
+  private static final float OTHER_MIN_PX = 20f;
+  /** 이보다 멀면 지평선에 뭉쳐 앞차와 겹친다. 그 거리에서는 알려줄 것도 없다. */
+  private static final float OTHER_MAX_M = 60f;
+  /**
+   * 속도를 적어 주는 최대 거리.
+   *
+   * 멀리 있는 차들은 화면에서 몇 픽셀 안에 모이므로 숫자를 다 적으면
+   * 지평선이 숫자 더미가 된다. 주된 앞차는 거리와 무관하게 적는다.
+   */
+  private static final float SPEED_LABEL_MAX_M = 45f;
 
-  private void drawLead(Canvas canvas, JSONObject lead, boolean primary) {
-    if (lead == null) {
+  /**
+   * 콤마가 보내는 v 가 상대속도(vRel, m/s)라고 본다. 자차 속도를 더해야
+   * 그 차의 실제 속도가 된다. 송신 쪽이 절대속도를 보낸다면 false 로 바꾼다.
+   */
+  private static final boolean V_IS_RELATIVE = true;
+
+  private void drawVehicles(Canvas canvas, JSONObject p) {
+    // 먼 것부터 그려 가까운 차가 위에 오게 한다.
+    JSONArray others = p.optJSONArray("others");
+    if (others != null) {
+      for (int i = 0; i < others.length(); i++) {
+        drawVehicle(canvas, others.optJSONObject(i), false);
+      }
+    }
+    drawVehicle(canvas, p.optJSONObject("lead2"), false);
+    drawVehicle(canvas, p.optJSONObject("lead"), true);
+  }
+
+  /**
+   * 차 한 대.
+   *
+   * @param primary 주된 앞차. 거리까지 적는다. 나머지는 속도만 적는다.
+   */
+  private void drawVehicle(Canvas canvas, JSONObject v, boolean primary) {
+    if (v == null) {
       return;
     }
-    float d = (float) lead.optDouble("d", 0);
-    float y = (float) lead.optDouble("y", 0);
+    float d = (float) v.optDouble("d", 0);
+    float lat = (float) v.optDouble("y", 0);
     if (!proj.visible(d)) {
+      return;   // 옆으로 나란히 선 차는 전방 투영으로 그릴 수 없다. 차선 색이 알린다.
+    }
+    if (!primary && d > OTHER_MAX_M) {
       return;
     }
-    float u = proj.screenX(d, y);
-    float v = proj.screenY(d);
-    // 두 번째 앞차는 멀면 지평선에 뭉쳐 주된 앞차와 겹친다. 그 거리에서는
-    // 알려줄 것도 없으므로 그리지 않는다.
-    if (!primary && d > LEAD2_MAX_M) {
-      return;
-    }
-    // 실제 차폭 1.8m 를 그 거리에서의 픽셀로 환산한다. 멀수록 작아진다.
-    // 멀 때 점 하나로 줄어들면 차인지 알 수 없어 최소 폭을 두되, 너무 키우면
-    // 먼 차가 가까워 보인다.
-    float wpx = Math.max(primary ? LEAD_MIN_PX : LEAD2_MIN_PX,
+
+    float u = proj.screenX(d, lat);
+    float base = proj.screenY(d);
+    // 실제 차폭 1.8m 를 그 거리에서의 픽셀로 환산한다. 멀 때 점으로 줄어들면
+    // 차인지 알 수 없어 최소 폭을 두되, 너무 키우면 먼 차가 가까워 보인다.
+    float wpx = Math.max(primary ? LEAD_MIN_PX : OTHER_MIN_PX,
         Math.min(200f, proj.scale(d, 1.8f)));
     float hpx = wpx * 0.62f;
+    boolean braking = v.optDouble("a", 0) < -0.5;
+    int color = braking ? COL_DANGER : COL_OBJECT;
 
-    // 앞차가 실제로 감속 중이면(aLeadK 가 충분히 음수) 후미등처럼 붉게 바꾼다.
-    boolean braking = lead.optDouble("a", 0) < -0.5;
-    int color = braking ? COL_DANGER : COL_ROAD;
-
-    scratch.reset();
+    // 뒤에서 본 차: 넓은 차체 위에 좁은 지붕.
     float half = wpx * 0.5f;
-    float top = v - hpx;
-    // 뒤에서 본 차 모양: 아래가 넓고 위가 살짝 좁은 사다리꼴 + 지붕
-    scratch.moveTo(u - half, v);
-    scratch.lineTo(u + half, v);
-    scratch.lineTo(u + half * 0.86f, top);
-    scratch.lineTo(u - half * 0.86f, top);
+    float top = base - hpx;
+    float shoulder = base - hpx * 0.55f;
+    scratch.reset();
+    scratch.moveTo(u - half, base);
+    scratch.lineTo(u + half, base);
+    scratch.lineTo(u + half, shoulder);
+    scratch.lineTo(u + half * 0.70f, top);
+    scratch.lineTo(u - half * 0.70f, top);
+    scratch.lineTo(u - half, shoulder);
     scratch.close();
+    fill.setColor(color);
+    fill.setAlpha(255);
+    canvas.drawPath(scratch, fill);
 
-    if (primary) {
-      fill.setColor(color);
-      fill.setAlpha(255);
-      canvas.drawPath(scratch, fill);
-    } else {
-      // 두 번째 앞차는 외곽선만. 반투명하게 하면 콤바이너에서 사라진다.
-      stroke.setColor(color);
-      stroke.setAlpha(255);
-      stroke.setStrokeWidth(2f);
-      stroke.setPathEffect(null);
-      canvas.drawPath(scratch, stroke);
+    // 노면 위 위치를 못박는 삼각형 커서. 꼭짓점이 차를 가리킨다.
+    float cw = Math.max(10f, wpx * 0.36f);
+    float ch = cw * 0.80f;
+    float cTop = base + 3f;
+    scratch.reset();
+    scratch.moveTo(u, cTop);
+    scratch.lineTo(u - cw * 0.5f, cTop + ch);
+    scratch.lineTo(u + cw * 0.5f, cTop + ch);
+    scratch.close();
+    canvas.drawPath(scratch, fill);
+
+    // 속도는 커서 아래. 숫자만 적는다. 단위가 붙으면 화면에 km/h 가 여럿 된다.
+    int kmh = vehicleSpeed(v);
+    if (kmh >= 0 && (primary || d <= SPEED_LABEL_MAX_M)) {
+      String s = String.valueOf(kmh);
+      drawLabel(canvas, s, u - labelPaint.measureText(s) * 0.5f, cTop + ch + SZ_LABEL, color);
     }
 
+    // 거리는 주된 앞차만. 모든 차에 붙이면 지평선이 숫자로 덮인다.
     if (primary) {
-      labelPaint.setColor(color);
       String label = String.format("%.0fm", d);
-      canvas.drawText(label, u - labelPaint.measureText(label) * 0.5f, top - 10f, labelPaint);
-      labelPaint.setColor(COL_ROAD);
+      drawLabel(canvas, label, u - labelPaint.measureText(label) * 0.5f, top - 10f, color);
     }
+  }
+
+  /** 도로 위에 놓이는 글자. 검은 테두리를 먼저 그려 배경과 갈라놓는다. */
+  private void drawLabel(Canvas canvas, String s, float x, float y, int color) {
+    canvas.drawText(s, x, y, labelHalo);
+    labelPaint.setColor(color);
+    canvas.drawText(s, x, y, labelPaint);
+    labelPaint.setColor(COL_ROAD);
+  }
+
+  /** 그 차의 실제 속도(km/h). 값이 없으면 -1. */
+  private int vehicleSpeed(JSONObject v) {
+    if (!v.has("v")) {
+      return -1;
+    }
+    double ms = v.optDouble("v", 0);
+    double kmh = V_IS_RELATIVE ? egoSpeed + ms * 3.6 : ms * 3.6;
+    return (int) Math.round(Math.max(0, kmh));
   }
 
   // ---- 3. 자차 ID.4 아이콘 ----
 
-  private static final float EGO_W = 62f;
-  private static final float EGO_L = 74f;
+  // ID.4 는 4584 x 1852mm 로 길이:폭이 약 2.5:1 이다. 화면에서 그대로 쓰면
+  // 세로를 너무 먹어서 1.65:1 로 줄였지만, 이전의 1.19:1 보다는 차로 읽힌다.
+  private static final float EGO_W = 52f;
+  private static final float EGO_L = 86f;
   /** 아이콘 위로 띄우는 간격. 경로 띠가 여기서부터 시작한다. */
   private static final float EGO_GAP = 12f;
   /** 안전영역 바닥에서 아이콘 중심까지. 그 아래는 투사되지 않는다. */
-  private static final float EGO_BOTTOM_PAD = 30f;
+  private static final float EGO_BOTTOM_PAD = 16f;
 
   private float egoCenterY() {
     return proj.safeBottom() - EGO_BOTTOM_PAD - EGO_L * 0.5f;
@@ -422,27 +502,41 @@ public class HudView extends View {
     return egoCenterY() - EGO_L * 0.5f - EGO_GAP;
   }
 
+  /**
+   * 위에서 본 ID.4.
+   *
+   * 이 크기(52x86px)에서 차종이 읽히려면 실루엣만으로는 부족하다. ID.4 를
+   * 구분해 주는 세 가지를 검은 홈으로 판다. 콤바이너에서 검은색은 투사되지
+   * 않으므로 홈은 실제로 '빈 곳'이 되어 밝은 면과 확실히 갈린다.
+   *
+   *   - 앞범퍼를 가로지르는 라이트바
+   *   - 짧은 보닛과 앞으로 밀린 A필러(전기차 비율)
+   *   - 뒤로 갈수록 좁아지는 루프와 누운 리어글라스
+   *
+   * 휠아치는 옆면을 직선으로 두지 않고 앞뒤를 부풀려 표현한다.
+   */
   private void drawEgo(Canvas canvas) {
     float cx = proj.centerX();
     float cy = egoCenterY();
     float hw = EGO_W * 0.5f, hl = EGO_L * 0.5f;
 
-    // 위에서 본 ID.4. 앞이 둥글고 뒤가 각진 SUV 비율에, 사이드미러가 양옆으로
-    // 튀어나온 실루엣이 한눈에 차로 읽힌다.
     scratch.reset();
-    scratch.moveTo(cx - hw * 0.80f, cy + hl);                       // 좌후
-    scratch.lineTo(cx + hw * 0.80f, cy + hl);                       // 우후
-    scratch.quadTo(cx + hw, cy + hl * 0.72f, cx + hw, cy + hl * 0.30f);
-    scratch.lineTo(cx + hw, cy - hl * 0.28f);
-    scratch.quadTo(cx + hw * 0.92f, cy - hl * 0.74f, cx + hw * 0.52f, cy - hl);
-    scratch.lineTo(cx - hw * 0.52f, cy - hl);                       // 앞
-    scratch.quadTo(cx - hw * 0.92f, cy - hl * 0.74f, cx - hw, cy - hl * 0.28f);
-    scratch.lineTo(cx - hw, cy + hl * 0.30f);
-    scratch.quadTo(cx - hw, cy + hl * 0.72f, cx - hw * 0.80f, cy + hl);
+    scratch.moveTo(cx - hw * 0.58f, cy + hl);                        // 뒤 범퍼 좌
+    scratch.lineTo(cx + hw * 0.58f, cy + hl);                        // 뒤 범퍼 우
+    scratch.quadTo(cx + hw * 0.98f, cy + hl * 0.97f, cx + hw, cy + hl * 0.74f);
+    scratch.lineTo(cx + hw, cy + hl * 0.34f);                        // 뒤 휠아치
+    scratch.lineTo(cx + hw * 0.95f, cy - hl * 0.08f);                // 도어
+    scratch.lineTo(cx + hw, cy - hl * 0.44f);                        // 앞 휠아치
+    scratch.quadTo(cx + hw * 0.95f, cy - hl * 0.90f, cx + hw * 0.50f, cy - hl);
+    scratch.lineTo(cx - hw * 0.50f, cy - hl);                        // 앞 범퍼
+    scratch.quadTo(cx - hw * 0.95f, cy - hl * 0.90f, cx - hw, cy - hl * 0.44f);
+    scratch.lineTo(cx - hw * 0.95f, cy - hl * 0.08f);
+    scratch.lineTo(cx - hw, cy + hl * 0.34f);
+    scratch.lineTo(cx - hw, cy + hl * 0.74f);
+    scratch.quadTo(cx - hw * 0.98f, cy + hl * 0.97f, cx - hw * 0.58f, cy + hl);
     scratch.close();
 
-    // 검은 테두리를 먼저 두른다. 검은색은 투사되지 않으므로 실제로는 아이콘
-    // 둘레가 '비어' 보이고, 뒤에 무엇이 겹쳐도 실루엣이 끊기지 않는다.
+    // 검은 테두리를 먼저 두른다. 뒤에 무엇이 겹쳐도 실루엣이 끊기지 않는다.
     stroke.setColor(Color.BLACK);
     stroke.setAlpha(255);
     stroke.setStrokeWidth(8f);
@@ -453,26 +547,32 @@ public class HudView extends View {
     fill.setAlpha(255);
     canvas.drawPath(scratch, fill);
 
-    // 사이드미러
-    float my = cy - hl * 0.30f, mw = hw * 0.20f, mh = hl * 0.10f;
-    canvas.drawRect(cx - hw - mw, my - mh, cx - hw * 0.96f, my + mh, fill);
-    canvas.drawRect(cx + hw * 0.96f, my - mh, cx + hw + mw, my + mh, fill);
+    // 사이드미러. A필러 위치에 둔다.
+    float my = cy - hl * 0.26f, mw = hw * 0.22f, mh = hl * 0.055f;
+    canvas.drawRect(cx - hw - mw, my - mh, cx - hw * 0.94f, my + mh, fill);
+    canvas.drawRect(cx + hw * 0.94f, my - mh, cx + hw + mw, my + mh, fill);
 
-    // 앞유리와 뒷유리를 검게 파서 진행 방향이 드러나게 한다.
     fill.setColor(Color.BLACK);
+
+    // 앞범퍼 라이트바. ID.4 를 정면에서 구분해 주는 표식이다.
+    canvas.drawRect(cx - hw * 0.40f, cy - hl * 0.90f,
+        cx + hw * 0.40f, cy - hl * 0.83f, fill);
+
+    // 앞유리. 위가 좁고 아래가 넓다(앞쪽이 위).
     scratch.reset();
-    scratch.moveTo(cx - hw * 0.62f, cy - hl * 0.10f);
-    scratch.lineTo(cx + hw * 0.62f, cy - hl * 0.10f);
-    scratch.lineTo(cx + hw * 0.46f, cy - hl * 0.60f);
-    scratch.lineTo(cx - hw * 0.46f, cy - hl * 0.60f);
+    scratch.moveTo(cx - hw * 0.44f, cy - hl * 0.52f);
+    scratch.lineTo(cx + hw * 0.44f, cy - hl * 0.52f);
+    scratch.lineTo(cx + hw * 0.62f, cy - hl * 0.14f);
+    scratch.lineTo(cx - hw * 0.62f, cy - hl * 0.14f);
     scratch.close();
     canvas.drawPath(scratch, fill);
 
+    // 리어글라스. 루프가 뒤로 좁아지므로 위쪽이 넓다.
     scratch.reset();
     scratch.moveTo(cx - hw * 0.60f, cy + hl * 0.24f);
     scratch.lineTo(cx + hw * 0.60f, cy + hl * 0.24f);
-    scratch.lineTo(cx + hw * 0.52f, cy + hl * 0.62f);
-    scratch.lineTo(cx - hw * 0.52f, cy + hl * 0.62f);
+    scratch.lineTo(cx + hw * 0.50f, cy + hl * 0.62f);
+    scratch.lineTo(cx - hw * 0.50f, cy + hl * 0.62f);
     scratch.close();
     canvas.drawPath(scratch, fill);
   }
