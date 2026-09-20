@@ -85,8 +85,16 @@ public class Projection {
     return x >= MIN_X;
   }
 
+  /**
+   * 횡방향을 화면 가로로 옮긴다.
+   *
+   * y 부호를 뒤집는다. 실차에서 차선 좌우가 바뀌어 보였다(글자는 정상이었으므로
+   * 콤바이너 반사 문제가 아니라 부호 해석 문제였다). 코드상 lanes[1] 이 좌측인데
+   * 그 y 가 음수였고, 음수를 화면 왼쪽으로 보내면 실제와 반대가 된다.
+   * 즉 이 데이터에서는 y 가 양수일 때 왼쪽이다.
+   */
   public float screenX(float x, float y) {
-    return cx + focal * y / Math.max(MIN_X, x);
+    return cx - focal * y / Math.max(MIN_X, x);
   }
 
   public float screenY(float x) {

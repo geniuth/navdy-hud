@@ -209,7 +209,9 @@ public class HudView extends View {
         continue;
       }
       boolean inner = (i == 1 || i == 2);
-      int type = inner ? (i == 1 ? typeL : typeR) : -1;
+      // 슬롯 1 이 화면 오른쪽이므로 rightLaneLine 을 쓴다. 좌우를 바로잡으면서
+      // 여기를 빼먹으면 점선/실선이 반대쪽 차선의 것으로 그려진다.
+      int type = inner ? (i == 1 ? typeR : typeL) : -1;
 
       stroke.setColor(laneColor(p, i, type));
       // 자차선이 굵고 바깥 차선이 가늘다. 중요도는 굵기로 낸다.
@@ -230,7 +232,10 @@ public class HudView extends View {
    * 물들이면 시선이 도로에서 떨어지지 않는다.
    */
   private int laneColor(JSONObject p, int index, int type) {
-    boolean leftSide = index <= 1;
+    // 슬롯 0,1 의 y 가 음수이고 이 데이터에서는 y 양수가 왼쪽이다(Projection
+    // 참고). 따라서 낮은 인덱스가 화면 오른쪽이다. 투영만 뒤집고 여기를 그대로
+    // 두면 차선 위치는 맞는데 사각지대 색이 반대편에 칠해진다.
+    boolean leftSide = index >= 2;
     boolean bsd = p.optBoolean(leftSide ? "leftBsd" : "rightBsd", false);
     if (bsd) {
       boolean blinker = p.optBoolean(leftSide ? "leftBlinker" : "rightBlinker", false);
