@@ -47,6 +47,8 @@ public class HudView extends View {
    * 안 보이면 이 값을 흰색까지 올리는 것으로 먼저 대응한다.
    */
   private static final int COL_OBJECT      = Color.rgb(200, 200, 200);
+  /** 내비/커브 감속 안내. 경고가 아니라 '곧 이렇게 된다'는 예고다. */
+  private static final int COL_NAV         = Color.rgb(255, 150, 40);
 
   // ---- 타이포: 속도가 1차 정보다 ----
 
@@ -55,6 +57,8 @@ public class HudView extends View {
   private static final float SZ_LABEL = 20f;   // 거리, 상태 문구
   private static final float SZ_SIGN  = 30f;   // 표지 안 숫자
   private static final float SZ_ALERT = 38f;   // 상태 경고. 속도보다 작게 둔다
+  private static final float SZ_SET   = 22f;   // 인게이지 속도. 속도에 딸린 값
+  private static final float SZ_NAV   = 21f;   // 커브/경로 감속 예고
 
   /** 제한속도를 이만큼 넘으면 속도 숫자가 주의색이 된다. GPS 오차와 계기 오차를 뺀 값. */
   private static final int OVER_MARGIN = 2;
@@ -78,6 +82,8 @@ public class HudView extends View {
   private final Paint labelPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
   private final Paint labelHalo = new Paint(Paint.ANTI_ALIAS_FLAG);
   private final Paint signPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+  private final Paint setPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+  private final Paint navPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
   private final Projection proj = new Projection();
   private final Path scratch = new Path();
 
@@ -120,6 +126,14 @@ public class HudView extends View {
     signPaint.setColor(COL_ROAD);
     signPaint.setTextSize(SZ_SIGN);
     signPaint.setFakeBoldText(true);
+
+    setPaint.setColor(COL_SYSTEM);
+    setPaint.setTextSize(SZ_SET);
+    setPaint.setFakeBoldText(true);
+
+    navPaint.setColor(COL_NAV);
+    navPaint.setTextSize(SZ_NAV);
+    navPaint.setFakeBoldText(true);
   }
 
   public void update(JSONObject p) {
@@ -155,10 +169,10 @@ public class HudView extends View {
       // 검출 차량의 속도를 상대속도에서 복원하는 데 쓴다.
       egoSpeed = p.optInt("speed", 0);
     }
+    advanceTravel();
     if (p == null) {
       labelPaint.setColor(COL_ROAD);
       canvas.drawText("링크: " + linkState, 16f, proj.safeTop() + SZ_LABEL, labelPaint);
-      drawEgo(canvas);
       return;
     }
 
@@ -169,11 +183,10 @@ public class HudView extends View {
         drawEdges(canvas, p.optJSONArray("edges"));
       }
       drawLanes(canvas, p.optJSONArray("lanes"), p);
-      drawPath(canvas, p.optJSONArray("path"));
+      drawPath(canvas, p.optJSONArray("path"), p.optBoolean("enabled", false));
       drawVehicles(canvas, p);
       drawSign(canvas, p, w);
     }
-    drawEgo(canvas);
     drawStatus(canvas, p);
 
     if (stale()) {
@@ -185,8 +198,51 @@ public class HudView extends View {
 
   // ---- 1. 차선 / 도로경계 / 경로 ----
 
-  /** 노면 표시와 같은 파선 간격. 실선일 때는 쓰지 않는다. */
-  private final DashPathEffect dashed = new DashPathEffect(new float[]{20f, 16f}, 0f);
+  // ---- 차선 원근 ----
+  //
+  // 화면 좌표에서 굵기를 고정하고 DashPathEffect 로 점선을 만들면, 먼 차선도
+  // 가까운 차선과 같은 굵기로 그려지고 점선 간격도 거리와 무관해진다. 그래서
+  // 도로가 누워 보이지 않고 벽처럼 선다.
+  //
+  // 대신 월드 좌표(m)에서 일정 간격으로 다시 샘플링해 조각마다 그 거리의
+  // 굵기로 긋고, 점선도 실제 노면 규격(m)으로 끊는다. 원근은 투영이 알아서
+  // 만들어 준다.
+
+  /** 실제 노면 표시 폭(m). 자차선을 조금 굵게 둬 중요도를 낸다. */
+  private static final float MARK_INNER_M = 0.16f;
+  private static final float MARK_OUTER_M = 0.11f;
+  /** 도심 백색 점선 규격: 표시 3m + 공백 5m. */
+  private static final float DASH_ON_M = 3.0f;
+  private static final float DASH_OFF_M = 5.0f;
+  /** 너무 가늘면 콤바이너에서 사라지고, 너무 굵으면 가까운 쪽이 뭉갠다. */
+  private static final float MARK_MIN_PX = 2.0f;
+  private static final float MARK_MAX_PX = 14f;
+  /** 월드에서 이 간격으로 잘라 그린다. 곡선과 굵기 변화가 계단지지 않을 만큼. */
+  private static final float STEP_M = 0.75f;
+
+  /**
+   * 지금까지 달린 거리(m).
+   *
+   * 차선 점선은 차량 기준 좌표로 오기 때문에, x 만으로 점선 위상을 정하면
+   * 달리는 중에도 점선이 화면에 붙박여 있는다. 속도를 적분해 위상을 밀어
+   * 실제처럼 다가오게 한다.
+   */
+  private float travelM = 0f;
+  private long travelMs = 0;
+
+  private void advanceTravel() {
+    long now = android.os.SystemClock.elapsedRealtime();
+    if (travelMs != 0) {
+      float dt = Math.min(0.5f, (now - travelMs) / 1000f);
+      travelM += egoSpeed / 3.6f * dt;
+      // 주기의 정수배로 접어 float 정밀도가 떨어지는 것을 막는다.
+      float period = DASH_ON_M + DASH_OFF_M;
+      if (travelM > period * 1000f) {
+        travelM -= period * 1000f;
+      }
+    }
+    travelMs = now;
+  }
 
   private void drawLanes(Canvas canvas, JSONArray lanes, JSONObject p) {
     if (lanes == null) {
@@ -209,19 +265,17 @@ public class HudView extends View {
         continue;
       }
       boolean inner = (i == 1 || i == 2);
-      // 슬롯 1 이 화면 오른쪽이므로 rightLaneLine 을 쓴다. 좌우를 바로잡으면서
-      // 여기를 빼먹으면 점선/실선이 반대쪽 차선의 것으로 그려진다.
-      int type = inner ? (i == 1 ? typeR : typeL) : -1;
+      // 슬롯 1 이 왼쪽 자차선이므로 leftLaneLine 을 쓴다. laneColor 의 좌우와
+      // 같은 매핑이어야 점선/실선이 제 차선에 그려진다.
+      int type = inner ? (i == 1 ? typeL : typeR) : -1;
 
       stroke.setColor(laneColor(p, i, type));
-      // 자차선이 굵고 바깥 차선이 가늘다. 중요도는 굵기로 낸다.
-      stroke.setStrokeWidth(inner ? 5f : 3f);
       // 종류를 아는 자차선만 점선/실선을 구분한다. 바깥 차선은 정보가 없으므로
       // 실선으로 그려 없는 노면 표시를 지어내지 않는다.
-      stroke.setPathEffect(type >= 0 && type % 10 == 0 ? dashed : null);
-      strokePolyline(canvas, lane.optJSONArray("p"));
+      boolean dash = type >= 0 && type % 10 == 0;
+      drawLaneLine(canvas, lane.optJSONArray("p"), dash,
+          inner ? MARK_INNER_M : MARK_OUTER_M);
     }
-    stroke.setPathEffect(null);
   }
 
   /**
@@ -232,10 +286,10 @@ public class HudView extends View {
    * 물들이면 시선이 도로에서 떨어지지 않는다.
    */
   private int laneColor(JSONObject p, int index, int type) {
-    // 슬롯 0,1 의 y 가 음수이고 이 데이터에서는 y 양수가 왼쪽이다(Projection
-    // 참고). 따라서 낮은 인덱스가 화면 오른쪽이다. 투영만 뒤집고 여기를 그대로
-    // 두면 차선 위치는 맞는데 사각지대 색이 반대편에 칠해진다.
-    boolean leftSide = index >= 2;
+    // laneLines 는 왼쪽부터 0,1,2,3 이고 y 음수가 왼쪽이다(기기 실측).
+    // 따라서 슬롯 0,1 이 왼쪽 차선이다. 여기가 >= 2 로 돼 있어서 사각지대
+    // 경고가 늘 반대편에 칠해졌다.
+    boolean leftSide = index <= 1;
     boolean bsd = p.optBoolean(leftSide ? "leftBsd" : "rightBsd", false);
     if (bsd) {
       boolean blinker = p.optBoolean(leftSide ? "leftBlinker" : "rightBlinker", false);
@@ -246,6 +300,62 @@ public class HudView extends View {
       return COL_ROAD_YELLOW;
     }
     return COL_ROAD;
+  }
+
+  /**
+   * 차선 한 줄. 월드 좌표에서 잘라 조각마다 그 거리의 굵기로 긋는다.
+   *
+   * @param dash  점선이면 true. 노면 규격(3m+5m)대로 끊고, 주행거리만큼
+   *              위상을 밀어 실제처럼 다가오게 한다.
+   * @param markM 실제 노면 표시 폭(m).
+   */
+  private void drawLaneLine(Canvas canvas, JSONArray pts, boolean dash, float markM) {
+    if (pts == null || pts.length() < 2) {
+      return;
+    }
+    final float period = DASH_ON_M + DASH_OFF_M;
+    float px = Float.NaN, py = 0f;
+    for (int i = 0; i < pts.length(); i++) {
+      JSONArray pt = pts.optJSONArray(i);
+      if (pt == null || pt.length() < 2) {
+        continue;
+      }
+      float x = (float) pt.optDouble(0, 0), y = (float) pt.optDouble(1, 0);
+      if (Float.isNaN(px)) {
+        px = x;
+        py = y;
+        continue;
+      }
+      float dx = x - px, dy = y - py;
+      float len = (float) Math.sqrt(dx * dx + dy * dy);
+      int steps = Math.max(1, (int) Math.ceil(len / STEP_M));
+      for (int k = 0; k < steps; k++) {
+        float t0 = k / (float) steps, t1 = (k + 1) / (float) steps;
+        float ax = px + dx * t0, ay = py + dy * t0;
+        float bx = px + dx * t1, by = py + dy * t1;
+        float mx = (ax + bx) * 0.5f;
+        if (!proj.visible(mx) || mx > Projection.MAX_X) {
+          continue;
+        }
+        if (dash) {
+          // 위상은 노면에 고정돼야 한다. 차량 기준 거리 mx 에 주행거리를 더하면
+          // 달릴수록 패턴이 다가온다.
+          float phase = (mx + travelM) % period;
+          if (phase < 0f) {
+            phase += period;
+          }
+          if (phase >= DASH_ON_M) {
+            continue;
+          }
+        }
+        float wpx = proj.scale(mx, markM);
+        stroke.setStrokeWidth(Math.max(MARK_MIN_PX, Math.min(MARK_MAX_PX, wpx)));
+        canvas.drawLine(proj.screenX(ax, ay), proj.screenY(ax),
+            proj.screenX(bx, by), proj.screenY(bx), stroke);
+      }
+      px = x;
+      py = y;
+    }
   }
 
   private void drawEdges(Canvas canvas, JSONArray edges) {
@@ -270,19 +380,20 @@ public class HudView extends View {
    * 실제 폭을 거리마다 투영해 좌우 가장자리를 만들고 그 사이를 채우면
    * 가까울수록 넓어지는 띠가 되어 원근이 생긴다.
    *
-   * 띠는 자차 아이콘 바로 위에서 시작한다. 아이콘과 띠가 같은 색이라 겹치면
-   * 한 덩어리로 보여서 자차 위치도 경로도 읽히지 않는다.
+   * 인게이지 중에는 무지개, 해제 중에는 흰색이다. 색이 곧 상태라 따로 읽을
+   * 글자가 없고, 시선이 도로에서 떨어지지 않는다.
    */
   // 넓게 채우면 HUD 에서 뒤의 실제 도로를 가린다. 자차 폭이 아니라
   // 진행 방향만 알려주는 가는 띠로 둔다.
   private static final float PATH_WIDTH_M = 0.7f;
   private static final float PATH_MAX_X = 35f;   // 너무 멀리 가면 실처럼 가늘어진다
 
-  private void drawPath(Canvas canvas, JSONArray path) {
+  private void drawPath(Canvas canvas, JSONArray path, boolean engaged) {
     if (path == null || path.length() < 2) {
       return;
     }
-    float egoTop = egoTop();
+    // 자차 아이콘을 없앴으므로 띠는 안전영역 바닥까지 내려온다.
+    float bottom = proj.safeBottom();
     // 좌측 가장자리는 가까운 쪽부터, 우측은 먼 쪽부터 넣어 닫힌 다각형을 만든다.
     float[] us = new float[path.length()];
     float[] vs = new float[path.length()];
@@ -298,8 +409,8 @@ public class HudView extends View {
         continue;
       }
       float v = proj.screenY(x);
-      if (v > egoTop) {
-        continue;   // 자차 아이콘에 겹치는 구간은 그리지 않는다
+      if (v > bottom) {
+        continue;   // 투사되지 않는 아래 여백
       }
       us[n] = proj.screenX(x, y);
       vs[n] = v;
@@ -320,14 +431,62 @@ public class HudView extends View {
     scratch.close();
     // 채움은 정보가 아니라 '면'을 만들기 위한 것이다. 뒤의 실제 도로가 비쳐야
     // 하므로 옅게 두고, 형태는 또렷한 외곽선이 책임진다.
-    fill.setColor(COL_SYSTEM);
-    fill.setAlpha(70);
-    canvas.drawPath(scratch, fill);
-    fill.setAlpha(255);
-    stroke.setColor(COL_SYSTEM);
+    float near = vs[0], far = vs[n - 1];
+    android.graphics.Shader shader = engaged ? rainbow(near, far) : null;
+
+    // 해제 중에는 채우지 않는다. 반투명 흰색은 결국 회색이고, 회색은 주간
+    // 콤바이너에서 가장 먼저 사라진다. 형태는 외곽선이 책임진다.
+    // 인게이지 중에만 무지개로 채워, 채움 자체가 상태 표시가 되게 한다.
+    if (engaged) {
+      fill.setShader(shader);
+      fill.setAlpha(120);
+      canvas.drawPath(scratch, fill);
+      fill.setShader(null);
+      fill.setAlpha(255);
+    }
+
+    stroke.setShader(shader);
+    stroke.setColor(COL_ROAD);
     stroke.setAlpha(255);
     stroke.setStrokeWidth(3f);
+    stroke.setPathEffect(null);
     canvas.drawPath(scratch, stroke);
+    stroke.setShader(null);
+  }
+
+  /**
+   * 인게이지 중 경로 띠에 쓰는 무지개.
+   *
+   * 색 자체에 뜻은 없다. "지금 openpilot 이 몰고 있다"를 한눈에 알리는 표시다.
+   * 흐르는 느낌을 주려고 시간에 따라 색상을 밀어 준다. 어차피 10Hz 로 다시
+   * 그리므로 추가 비용이 없다.
+   *
+   * 색상은 한 바퀴 다 돌리지 않는다. 360도를 그대로 쓰면 남색과 보라가
+   * 섞이는데, 콤바이너에서 그 구간은 휘도가 낮아 띠가 중간중간 끊겨 보인다.
+   * 노랑~청록(40~200도)만 왕복시키면 어디서 끊어도 밝고, 왕복이라 이음매가
+   * 생기지 않는다.
+   */
+  private static final int RAINBOW_STEPS = 9;
+  private static final float HUE_MIN = 40f;    // 주황빛 노랑
+  private static final float HUE_MAX = 200f;   // 청록
+  private final int[] rainbowColors = new int[RAINBOW_STEPS];
+  private final float[] rainbowStops = new float[RAINBOW_STEPS];
+  private final float[] hsv = new float[]{0f, 0.80f, 1f};
+
+  private android.graphics.Shader rainbow(float nearY, float farY) {
+    // 2 초에 한 왕복. 더 빠르면 시선을 끌고, 더 느리면 멈춰 보인다.
+    float phase = (android.os.SystemClock.elapsedRealtime() % 2000L) / 2000f;
+    for (int i = 0; i < RAINBOW_STEPS; i++) {
+      float t = i / (float) (RAINBOW_STEPS - 1);
+      // 삼각파: 0->1->0. 양 끝 색이 같아 반복해도 이음매가 없다.
+      float u = (t + phase) % 1f;
+      float tri = u < 0.5f ? u * 2f : (1f - u) * 2f;
+      hsv[0] = HUE_MIN + (HUE_MAX - HUE_MIN) * tri;
+      rainbowColors[i] = Color.HSVToColor(hsv);
+      rainbowStops[i] = t;
+    }
+    return new android.graphics.LinearGradient(0f, nearY, 0f, farY,
+        rainbowColors, rainbowStops, android.graphics.Shader.TileMode.CLAMP);
   }
 
   private void strokePolyline(Canvas canvas, JSONArray pts) {
@@ -488,100 +647,6 @@ public class HudView extends View {
     return (int) Math.round(Math.max(0, kmh));
   }
 
-  // ---- 3. 자차 ID.4 아이콘 ----
-
-  // ID.4 는 4584 x 1852mm 로 길이:폭이 약 2.5:1 이다. 화면에서 그대로 쓰면
-  // 세로를 너무 먹어서 1.65:1 로 줄였지만, 이전의 1.19:1 보다는 차로 읽힌다.
-  private static final float EGO_W = 52f;
-  private static final float EGO_L = 86f;
-  /** 아이콘 위로 띄우는 간격. 경로 띠가 여기서부터 시작한다. */
-  private static final float EGO_GAP = 12f;
-  /** 안전영역 바닥에서 아이콘 중심까지. 그 아래는 투사되지 않는다. */
-  private static final float EGO_BOTTOM_PAD = 16f;
-
-  private float egoCenterY() {
-    return proj.safeBottom() - EGO_BOTTOM_PAD - EGO_L * 0.5f;
-  }
-
-  private float egoTop() {
-    return egoCenterY() - EGO_L * 0.5f - EGO_GAP;
-  }
-
-  /**
-   * 위에서 본 ID.4.
-   *
-   * 이 크기(52x86px)에서 차종이 읽히려면 실루엣만으로는 부족하다. ID.4 를
-   * 구분해 주는 세 가지를 검은 홈으로 판다. 콤바이너에서 검은색은 투사되지
-   * 않으므로 홈은 실제로 '빈 곳'이 되어 밝은 면과 확실히 갈린다.
-   *
-   *   - 앞범퍼를 가로지르는 라이트바
-   *   - 짧은 보닛과 앞으로 밀린 A필러(전기차 비율)
-   *   - 뒤로 갈수록 좁아지는 루프와 누운 리어글라스
-   *
-   * 휠아치는 옆면을 직선으로 두지 않고 앞뒤를 부풀려 표현한다.
-   */
-  private void drawEgo(Canvas canvas) {
-    float cx = proj.centerX();
-    float cy = egoCenterY();
-    float hw = EGO_W * 0.5f, hl = EGO_L * 0.5f;
-
-    scratch.reset();
-    scratch.moveTo(cx - hw * 0.58f, cy + hl);                        // 뒤 범퍼 좌
-    scratch.lineTo(cx + hw * 0.58f, cy + hl);                        // 뒤 범퍼 우
-    scratch.quadTo(cx + hw * 0.98f, cy + hl * 0.97f, cx + hw, cy + hl * 0.74f);
-    scratch.lineTo(cx + hw, cy + hl * 0.34f);                        // 뒤 휠아치
-    scratch.lineTo(cx + hw * 0.95f, cy - hl * 0.08f);                // 도어
-    scratch.lineTo(cx + hw, cy - hl * 0.44f);                        // 앞 휠아치
-    scratch.quadTo(cx + hw * 0.95f, cy - hl * 0.90f, cx + hw * 0.50f, cy - hl);
-    scratch.lineTo(cx - hw * 0.50f, cy - hl);                        // 앞 범퍼
-    scratch.quadTo(cx - hw * 0.95f, cy - hl * 0.90f, cx - hw, cy - hl * 0.44f);
-    scratch.lineTo(cx - hw * 0.95f, cy - hl * 0.08f);
-    scratch.lineTo(cx - hw, cy + hl * 0.34f);
-    scratch.lineTo(cx - hw, cy + hl * 0.74f);
-    scratch.quadTo(cx - hw * 0.98f, cy + hl * 0.97f, cx - hw * 0.58f, cy + hl);
-    scratch.close();
-
-    // 검은 테두리를 먼저 두른다. 뒤에 무엇이 겹쳐도 실루엣이 끊기지 않는다.
-    stroke.setColor(Color.BLACK);
-    stroke.setAlpha(255);
-    stroke.setStrokeWidth(8f);
-    stroke.setPathEffect(null);
-    canvas.drawPath(scratch, stroke);
-
-    fill.setColor(COL_SYSTEM);
-    fill.setAlpha(255);
-    canvas.drawPath(scratch, fill);
-
-    // 사이드미러. A필러 위치에 둔다.
-    float my = cy - hl * 0.26f, mw = hw * 0.22f, mh = hl * 0.055f;
-    canvas.drawRect(cx - hw - mw, my - mh, cx - hw * 0.94f, my + mh, fill);
-    canvas.drawRect(cx + hw * 0.94f, my - mh, cx + hw + mw, my + mh, fill);
-
-    fill.setColor(Color.BLACK);
-
-    // 앞범퍼 라이트바. ID.4 를 정면에서 구분해 주는 표식이다.
-    canvas.drawRect(cx - hw * 0.40f, cy - hl * 0.90f,
-        cx + hw * 0.40f, cy - hl * 0.83f, fill);
-
-    // 앞유리. 위가 좁고 아래가 넓다(앞쪽이 위).
-    scratch.reset();
-    scratch.moveTo(cx - hw * 0.44f, cy - hl * 0.52f);
-    scratch.lineTo(cx + hw * 0.44f, cy - hl * 0.52f);
-    scratch.lineTo(cx + hw * 0.62f, cy - hl * 0.14f);
-    scratch.lineTo(cx - hw * 0.62f, cy - hl * 0.14f);
-    scratch.close();
-    canvas.drawPath(scratch, fill);
-
-    // 리어글라스. 루프가 뒤로 좁아지므로 위쪽이 넓다.
-    scratch.reset();
-    scratch.moveTo(cx - hw * 0.60f, cy + hl * 0.24f);
-    scratch.lineTo(cx + hw * 0.60f, cy + hl * 0.24f);
-    scratch.lineTo(cx + hw * 0.50f, cy + hl * 0.62f);
-    scratch.lineTo(cx - hw * 0.50f, cy + hl * 0.62f);
-    scratch.close();
-    canvas.drawPath(scratch, fill);
-  }
-
   // ---- 4. 제한속도 표지 / 방지턱 ----
 
   /**
@@ -687,5 +752,71 @@ public class HudView extends View {
 
     speedPaint.setColor(COL_ROAD);
     unitPaint.setColor(COL_ROAD);
+
+    // 인게이지 속도. 주행 속도에 딸린 값이라 바로 아래에 작게 둔다.
+    // 해제 중에는 지운다 - 안 쓰이는 설정값이 계속 떠 있으면 지금 그 속도로
+    // 가고 있는 줄 안다.
+    float y = baseline + SZ_SET + 6f;
+    int set = p.optInt("set", 0);
+    if (p.optBoolean("enabled", false) && set > 0) {
+      canvas.drawText("SET " + set, 16f, y, setPaint);
+    }
+
+    drawNav(canvas, p, y + SZ_NAV + 6f);
+  }
+
+  /**
+   * 커브/경로 감속 예고. 속도 아래 한 줄에 주황색으로 모은다.
+   *
+   *   VT 45     시야 커브에서 낼 수 있는 속도
+   *   ↰ 120m    다음 경로 안내와 남은 거리
+   *   ▼ 50      최종 목표속도
+   *
+   * 셋 다 "곧 느려진다"는 같은 얘기라 한 줄에 묶었다. 경고색(노랑/빨강)을
+   * 쓰지 않는 이유는 지금 위험한 게 아니라 예고이기 때문이다.
+   */
+  private void drawNav(Canvas canvas, JSONObject p, float y) {
+    int vturn = p.optInt("vTurnSpeed", 0);
+    int turn = p.optInt("turnInfo", -1);
+    int turnDist = p.optInt("turnDist", 0);
+    int desired = p.optInt("desiredSpeed", 0);
+
+    StringBuilder sb = new StringBuilder();
+    if (vturn > 0) {
+      sb.append("VT ").append(vturn);
+    }
+    String arrow = turnArrow(turn);
+    if (arrow != null && turnDist > 0) {
+      if (sb.length() > 0) {
+        sb.append("  ");
+      }
+      sb.append(arrow).append(' ').append(turnDist).append('m');
+    }
+    // 목표속도는 위 둘 중 하나라도 있을 때만 적는다. 평소 주행에서는
+    // 제한속도와 같은 값이 계속 떠 있어 읽을 것만 늘린다.
+    if (desired > 0 && sb.length() > 0) {
+      sb.append("  ▼ ").append(desired);
+    }
+    if (sb.length() == 0) {
+      return;
+    }
+    canvas.drawText(sb.toString(), 16f, y, navPaint);
+  }
+
+  /**
+   * 경로 안내 기호. carrot 의 xTurnInfo 규약을 따른다.
+   * 1 좌회전 2 우회전 3 좌차선변경 4 우차선변경 5 로터리 6 톨게이트 7 도착/유턴.
+   */
+  private String turnArrow(int turn) {
+    switch (turn) {
+      case 1: return "↰";   // 좌회전
+      case 2: return "↱";   // 우회전
+      case 3: return "←";   // 좌차선변경
+      case 4: return "→";   // 우차선변경
+      case 5: return "↻";   // 로터리
+      case 6: return "TG";
+      case 7: return "↩";   // 도착/유턴
+      default: return null;
+    }
   }
 }

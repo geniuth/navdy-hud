@@ -4,7 +4,7 @@ package kr.geniu.navdyhud;
  * 콤마 좌표계(미터) → HUD 화면 좌표(픽셀) 투영.
  *
  * 콤마가 보내는 값은 차량 기준이다: x 는 전방 거리, y 는 횡방향이고 음수가 왼쪽이다
- * (실측 확인: lanes[0]=-4.89 바깥좌, lanes[3]=+4.51 바깥우).
+ * (기기 실측: laneLines[0]=-3.69 바깥좌, laneLines[3]=+3.93 바깥우).
  *
  * 노면 위 높이 camH 에 카메라가 있고 정면을 본다고 두면 핀홀 투영이 된다:
  *     u = cx + f * y / x
@@ -88,13 +88,16 @@ public class Projection {
   /**
    * 횡방향을 화면 가로로 옮긴다.
    *
-   * y 부호를 뒤집는다. 실차에서 차선 좌우가 바뀌어 보였다(글자는 정상이었으므로
-   * 콤바이너 반사 문제가 아니라 부호 해석 문제였다). 코드상 lanes[1] 이 좌측인데
-   * 그 y 가 음수였고, 음수를 화면 왼쪽으로 보내면 실제와 반대가 된다.
-   * 즉 이 데이터에서는 y 가 양수일 때 왼쪽이다.
+   * y 음수가 왼쪽이다. 기기에서 modelV2.laneLines 를 직접 재서 확인했다:
+   * 바깥 왼쪽(index 0) y=-3.69, 바깥 오른쪽(index 3) y=+3.93.
+   *
+   * 한때 이 부호를 뒤집어 뒀다. 실차에서 좌우가 바뀌어 보인다는 보고를 받고
+   * 기하를 뒤집었는데, 실제 원인은 HudView.laneColor 의 사각지대 좌우 매핑이었다.
+   * 기하까지 뒤집으니 도로 전체가 거울상이 됐고 색은 여전히 반대였다.
+   * 부호는 원래대로 두고 매핑만 고치는 것이 맞다.
    */
   public float screenX(float x, float y) {
-    return cx - focal * y / Math.max(MIN_X, x);
+    return cx + focal * y / Math.max(MIN_X, x);
   }
 
   public float screenY(float x) {

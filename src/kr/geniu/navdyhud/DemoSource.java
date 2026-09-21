@@ -24,7 +24,7 @@ public class DemoSource {
   /** 장면 하나의 길이(ms). 한 바퀴 약 40초. */
   private static final int SCENE_MS = 5000;
   private static final int TICK_MS = 100;          // 콤마와 같은 10Hz
-  private static final int SCENES = 8;
+  private static final int SCENES = 10;
 
   private final HudView view;
   private final Handler handler = new Handler(Looper.getMainLooper());
@@ -107,6 +107,16 @@ public class DemoSource {
           p.put("rightBsd", true);
           speed = 34;
           break;
+        case 8:   // 디스인게이지: 경로 띠가 흰색이어야 한다
+          p.put("lead", lead(45f, 0f, -3f, 0f));
+          break;
+        case 9:   // 커브 감속 + 좌회전 안내. 주황색 한 줄이 뜬다
+          p.put("vTurnSpeed", 45);
+          p.put("turnInfo", 1);
+          p.put("turnDist", Math.round(300 - 240 * t));
+          p.put("desiredSpeed", 45);
+          speed = 68;
+          break;
         default:
           break;
       }
@@ -115,6 +125,9 @@ public class DemoSource {
       p.put("laneR", 11);
       p.put("speed", speed);
       p.put("limit", scene == 5 ? 80 : 60);
+      // 8번만 해제 상태로 두어 경로 띠 색이 갈리는 것을 본다.
+      p.put("enabled", scene != 8);
+      p.put("set", 70);
     } catch (Exception ignored) {
       // JSONObject.put 은 값이 NaN 일 때만 던진다. 여기서는 나올 수 없다.
     }
