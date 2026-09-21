@@ -545,12 +545,6 @@ public class HudView extends View {
    */
   private static final float SPEED_LABEL_MAX_M = 45f;
 
-  /**
-   * 콤마가 보내는 v 가 상대속도(vRel, m/s)라고 본다. 자차 속도를 더해야
-   * 그 차의 실제 속도가 된다. 송신 쪽이 절대속도를 보낸다면 false 로 바꾼다.
-   */
-  private static final boolean V_IS_RELATIVE = true;
-
   private void drawVehicles(Canvas canvas, JSONObject p) {
     // 먼 것부터 그려 가까운 차가 위에 오게 한다.
     JSONArray others = p.optJSONArray("others");
@@ -640,14 +634,18 @@ public class HudView extends View {
     labelPaint.setColor(COL_ROAD);
   }
 
-  /** 그 차의 실제 속도(km/h). 값이 없으면 -1. */
+  /**
+   * 그 차의 실제 속도(km/h). 값이 없으면 -1.
+   *
+   * v 는 상대속도이고 송신 쪽에서 이미 km/h 로 바꿔 보낸다
+   * (remote_hud._lead 가 vRel * 3.6 을 넣는다). 여기서 3.6 을 또 곱하는
+   * 바람에 자차 61km/h 인데 앞차가 126 으로 찍혔다.
+   */
   private int vehicleSpeed(JSONObject v) {
     if (!v.has("v")) {
       return -1;
     }
-    double ms = v.optDouble("v", 0);
-    double kmh = V_IS_RELATIVE ? egoSpeed + ms * 3.6 : ms * 3.6;
-    return (int) Math.round(Math.max(0, kmh));
+    return (int) Math.round(Math.max(0, egoSpeed + v.optDouble("v", 0)));
   }
 
   // ---- 4. 제한속도 표지 / 방지턱 ----
