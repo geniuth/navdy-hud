@@ -265,8 +265,8 @@ public class HudView extends View {
         continue;
       }
       boolean inner = (i == 1 || i == 2);
-      // 슬롯 1 이 왼쪽 자차선이므로 leftLaneLine 을 쓴다. laneColor 의 좌우와
-      // 같은 매핑이어야 점선/실선이 제 차선에 그려진다.
+      // 슬롯 1 이 실제 왼쪽 자차선이므로 leftLaneLine 을 쓴다. laneColor 의
+      // 좌우와 같은 매핑이어야 점선/실선이 제 차선에 그려진다.
       int type = inner ? (i == 1 ? typeL : typeR) : -1;
 
       stroke.setColor(laneColor(p, i, type));
@@ -286,9 +286,12 @@ public class HudView extends View {
    * 물들이면 시선이 도로에서 떨어지지 않는다.
    */
   private int laneColor(JSONObject p, int index, int type) {
-    // laneLines 는 왼쪽부터 0,1,2,3 이고 y 음수가 왼쪽이다(기기 실측).
-    // 따라서 슬롯 0,1 이 왼쪽 차선이다. 여기가 >= 2 로 돼 있어서 사각지대
-    // 경고가 늘 반대편에 칠해졌다.
+    // laneLines 는 왼쪽부터 0,1,2,3 이므로 슬롯 0,1 이 실제 왼쪽 차선이다
+    // (기기 실측: index 0 의 y=-3.69, index 3 의 y=+3.93).
+    //
+    // 화면상 어느 쪽에 그려지는지는 여기서 따지지 않는다. Projection.screenX
+    // 가 나브디 광학계에 맞춰 좌우를 뒤집으므로, 실제 좌우로만 판단하면 된다.
+    // 여기가 >= 2 로 돼 있어서 사각지대 경고가 늘 반대편에 칠해졌다.
     boolean leftSide = index <= 1;
     boolean bsd = p.optBoolean(leftSide ? "leftBsd" : "rightBsd", false);
     if (bsd) {
