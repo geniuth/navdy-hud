@@ -93,6 +93,16 @@ public class HudView extends View {
    */
   private static final long STALE_MS = 1500;
 
+  /**
+   * 잠깐 띄우는 안내 문구.
+   *
+   * Toast 를 쓰려다 앱이 죽었다. 이 펌웨어에는 NotificationManager 서비스가
+   * 없어서 Toast.show() 가 NPE 를 던진다. 화면은 우리가 그리고 있으니
+   * 여기에 직접 그린다.
+   */
+  private volatile String hint = "";
+  private volatile long hintUntil = 0;
+
   private volatile JSONObject packet;
   private volatile String linkState = "시작중";
   private volatile long packets = 0;
@@ -148,6 +158,24 @@ public class HudView extends View {
         || android.os.SystemClock.elapsedRealtime() - lastPacketMs > STALE_MS;
   }
 
+  /** 문구를 ms 동안 화면 아래에 띄운다. */
+  public void showHint(String text, long ms) {
+    hint = text == null ? "" : text;
+    hintUntil = android.os.SystemClock.elapsedRealtime() + ms;
+    postInvalidate();
+    postInvalidateDelayed(ms + 50);
+  }
+
+  private void drawHint(Canvas canvas) {
+    if (hint.isEmpty() || android.os.SystemClock.elapsedRealtime() > hintUntil) {
+      return;
+    }
+    float w = labelPaint.measureText(hint);
+    float x = proj.centerX() - w * 0.5f;
+    float y = proj.safeBottom() - 8f;
+    drawLabel(canvas, hint, x, y, COL_ROAD);
+  }
+
   public void setLinkState(String s) {
     linkState = s;
     postInvalidate();
@@ -173,6 +201,7 @@ public class HudView extends View {
     if (p == null) {
       labelPaint.setColor(COL_ROAD);
       canvas.drawText("링크: " + linkState, 16f, proj.safeTop() + SZ_LABEL, labelPaint);
+      drawHint(canvas);
       return;
     }
 
@@ -188,6 +217,7 @@ public class HudView extends View {
       drawSign(canvas, p, w);
     }
     drawStatus(canvas, p);
+    drawHint(canvas);
 
     if (stale()) {
       // 다음 패킷이 없으면 onDraw 가 다시 안 불리므로, 끊긴 뒤에도 표시를
