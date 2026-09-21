@@ -32,12 +32,19 @@ Copy-Item build\classes.dex .\classes.dex -Force
 Remove-Item .\classes.dex -Force
 
 & "$bt\zipalign.exe" -f 4 build\unsigned.apk build\aligned.apk
-if (-not (Test-Path build\debug.keystore)) {
-  keytool -genkeypair -keystore build\debug.keystore -storepass android -keypass android `
+# 서명키는 build 폴더 밖에 둔다. build 는 .gitignore 대상이라 저장소를 새로
+# 받거나 build 를 지우면 키가 사라진다. 그렇게 만들어진 새 키로 서명하면
+# 기기가 INSTALL_FAILED_UPDATE_INCOMPATIBLE 로 거부한다(실제로 겪었다).
+$keyDir = Join-Path $env:USERPROFILE ".navdyhud"
+$keystore = Join-Path $keyDir "release.keystore"
+if (-not (Test-Path $keystore)) {
+  New-Item -ItemType Directory -Force $keyDir | Out-Null
+  keytool -genkeypair -keystore $keystore -storepass android -keypass android `
           -alias hud -keyalg RSA -keysize 2048 -validity 10000 `
           -dname "CN=CommaHUD, OU=dev, O=dev, L=Seoul, C=KR" 2>&1 | Out-Null
+  Write-Output "새 서명키 생성: $keystore"
 }
-& "$bt\apksigner.bat" sign --ks build\debug.keystore --ks-pass pass:android --key-pass pass:android `
+& "$bt\apksigner.bat" sign --ks $keystore --ks-pass pass:android --key-pass pass:android `
     --ks-key-alias hud --min-sdk-version 22 --out build\CommaHUD.apk build\aligned.apk
 
 Write-Output "빌드 완료: $((Get-Item build\CommaHUD.apk).Length) bytes"
