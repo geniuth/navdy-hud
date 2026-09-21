@@ -6,6 +6,7 @@
   <uses-sdk android:minSdkVersion="22" android:targetSdkVersion="22" />
   <uses-permission android:name="android.permission.BLUETOOTH" />
   <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
+  <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
   <application android:label="CommaHUD" android:hardwareAccelerated="true">
     <activity android:name=".HudActivity"
               android:label="CommaHUD"
@@ -17,5 +18,14 @@
         <category android:name="android.intent.category.LAUNCHER" />
       </intent-filter>
     </activity>
+
+    <!-- 전원을 껐다 켜면 순정 UI 만 올라오므로 HUD 를 스스로 띄운다. -->
+    <receiver android:name=".BootReceiver">
+      <intent-filter>
+        <action android:name="android.intent.action.BOOT_COMPLETED" />
+        <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+      </intent-filter>
+    </receiver>
+    <service android:name=".BootService" />
   </application>
 </manifest>
