@@ -3,7 +3,7 @@ package kr.geniu.navdyhud;
 import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Color;
-import android.graphics.DashPathEffect;
+import android.graphics.CornerPathEffect;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.view.View;
@@ -588,7 +588,20 @@ public class HudView extends View {
   }
 
   /**
-   * 차 한 대.
+   * 차 한 대. 테슬라 주행 시각화처럼 창문도 램프도 없는 매끈한 회색 덩어리로 그린다.
+   *
+   * 박스를 평면으로 그리지 않고 실제 차 크기의 3D 모델을 도로와 같은 투영으로
+   * 찍는다. 그래서 앞차는 뒷면과 살짝 내려다보이는 지붕만, 옆차선 차는 우리
+   * 쪽을 향한 옆면까지 보인다. 앞차와 옆차의 모양 차이는 원근이 만든다.
+   *
+   * 매끈함은 두 가지로 낸다.
+   *   - 모든 꼭짓점의 볼록껍질을 크게 둥글린 덩어리를 먼저 깔고
+   *   - 그 위에 면을 작게 둥글려 얹는다. 면 사이 틈으로 바닥 덩어리가 비쳐
+   *     모서리가 부드럽게 이어진다.
+   * 명암은 위에서 빛이 온다고 보고 윗면일수록 밝게, 아래로 갈수록 어둡게 둔다.
+   *
+   * 차체는 급감속해도 회색으로 남고, 뒷면의 램프 띠만 빨갛게 켜진다. 차 전체를
+   * 칠하면 모양이 사라져 어느 차인지보다 빨간 덩어리가 먼저 보인다.
    *
    * @param primary 주된 앞차. 거리까지 적는다. 나머지는 속도만 적는다.
    */
@@ -605,40 +618,99 @@ public class HudView extends View {
       return;
     }
 
-    float u = proj.screenX(d, lat);
-    float base = proj.screenY(d);
-    // 실제 차폭 1.8m 를 그 거리에서의 픽셀로 환산한다. 멀 때 점으로 줄어들면
-    // 차인지 알 수 없어 최소 폭을 두되, 너무 키우면 먼 차가 가까워 보인다.
-    float wpx = Math.max(primary ? LEAD_MIN_PX : OTHER_MIN_PX,
-        Math.min(200f, proj.scale(d, 1.8f)));
-    float hpx = wpx * 0.62f;
+    // 실제 차폭을 그 거리에서의 픽셀로 환산하고, 너무 작거나 크면 뒤범퍼 바닥
+    // 중앙을 기준으로 통째로 키우거나 줄인다. 모양과 원근은 그대로 둔다.
+    float wpx = proj.scale(d, CAR_HW * 2f);
+    float target = Math.max(primary ? LEAD_MIN_PX : OTHER_MIN_PX, Math.min(200f, wpx));
+    carD = d;
+    carLat = lat;
+    carAx = proj.screenX(d, lat);
+    carAy = proj.screenY(d);
+    carK = target / wpx;
+
     boolean braking = v.optDouble("a", 0) < -0.5;
     int color = braking ? COL_DANGER : COL_OBJECT;
 
-    // 뒤에서 본 차: 넓은 차체 위에 좁은 지붕.
-    float half = wpx * 0.5f;
-    float top = base - hpx;
-    float shoulder = base - hpx * 0.55f;
-    scratch.reset();
-    scratch.moveTo(u - half, base);
-    scratch.lineTo(u + half, base);
-    scratch.lineTo(u + half, shoulder);
-    scratch.lineTo(u + half * 0.70f, top);
-    scratch.lineTo(u - half * 0.70f, top);
-    scratch.lineTo(u - half, shoulder);
-    scratch.close();
-    fill.setColor(color);
-    fill.setAlpha(255);
-    canvas.drawPath(scratch, fill);
+    // 옆면은 우리 쪽을 향한 것만 보인다. 정면에 있으면 양쪽 다 안 보인다.
+    float sideY = 0f;
+    if (lat + CAR_HW < -0.05f) {
+      sideY = CAR_HW;
+    } else if (lat - CAR_HW > 0.05f) {
+      sideY = -CAR_HW;
+    }
+
+    // 0. 뒷바퀴. 뒤범퍼 아래로 보이는 부분만 필요하므로 차체보다 먼저 깔고
+    //    차체가 위를 덮게 한다. 바퀴 뒷면(차축 - 반지름)에 놓는다.
+    shade.setPathEffect(new CornerPathEffect(target * 0.05f));
+    float tx = AXLE_REAR - WHEEL_R;
+    for (int s = -1; s <= 1; s += 2) {
+      float in = s * (CAR_HW - TIRE_W - 0.06f), out = s * (CAR_HW - 0.06f);
+      face(carPath, tx, in, 0f, tx, out, 0f, tx, out, BODY_Z0 + 0.10f, tx, in, BODY_Z0 + 0.10f);
+      fillShaded(canvas, carPath, SH_TIRE, SH_TIRE);
+    }
+
+    // 1. 덩어리
+    float hullTop = hull(carPath);
+    shade.setPathEffect(new CornerPathEffect(target * 0.20f));
+    fillShaded(canvas, carPath, SH_HULL_TOP, SH_HULL_BOTTOM);
+
+    shade.setPathEffect(new CornerPathEffect(target * 0.13f));
+    // 2. 데크(트렁크/보닛 윗면)
+    face(carPath, 0, -CAR_HW, BODY_Z1, 0, CAR_HW, BODY_Z1, CAR_L, CAR_HW, BODY_Z1, CAR_L, -CAR_HW, BODY_Z1);
+    fillShaded(canvas, carPath, SH_DECK, SH_DECK);
+    // 3. 차체 옆면
+    if (sideY != 0f) {
+      face(carPath, 0, sideY, BODY_Z0, CAR_L, sideY, BODY_Z0, CAR_L, sideY, BODY_Z1, 0, sideY, BODY_Z1);
+      fillShaded(canvas, carPath, SH_SIDE_TOP, SH_SIDE_BOTTOM);
+      // 옆면 바퀴. 타이어는 어둡게, 휠은 밝게 두어 작은 크기에서도 원으로 읽힌다.
+      // 옆면보다 살짝 바깥에 놓아 차체 색에 묻히지 않게 한다.
+      float wy = sideY * 1.01f;
+      shade.setPathEffect(null);
+      for (float ax : AXLES) {
+        wheel(carPath, ax, wy, WHEEL_R);
+        fillShaded(canvas, carPath, SH_TIRE, SH_TIRE);
+        wheel(carPath, ax, wy, WHEEL_R * 0.55f);
+        fillShaded(canvas, carPath, SH_HUB_TOP, SH_HUB_BOTTOM);
+      }
+      shade.setPathEffect(new CornerPathEffect(target * 0.13f));
+    }
+    // 4. 차체 뒷면
+    face(carPath, 0, -CAR_HW, BODY_Z0, 0, CAR_HW, BODY_Z0, 0, CAR_HW, BODY_Z1, 0, -CAR_HW, BODY_Z1);
+    fillShaded(canvas, carPath, SH_REAR_TOP, SH_REAR_BOTTOM);
+    // 5. 캐빈 옆면
+    if (sideY != 0f) {
+      float s = Math.signum(sideY);
+      face(carPath, CAB_X0, s * CAB_HW, BODY_Z1, CAB_X1, s * CAB_HW, BODY_Z1,
+          CAB_TX1, s * ROOF_HW, ROOF_Z, CAB_TX0, s * ROOF_HW, ROOF_Z);
+      fillShaded(canvas, carPath, SH_CAB_SIDE_TOP, SH_CAB_SIDE_BOTTOM);
+    }
+    // 6. 캐빈 뒷면(누운 뒷유리 자리)
+    face(carPath, CAB_X0, -CAB_HW, BODY_Z1, CAB_X0, CAB_HW, BODY_Z1,
+        CAB_TX0, ROOF_HW, ROOF_Z, CAB_TX0, -ROOF_HW, ROOF_Z);
+    fillShaded(canvas, carPath, SH_CAB_REAR_TOP, SH_CAB_REAR_BOTTOM);
+    // 7. 지붕
+    face(carPath, CAB_TX0, -ROOF_HW, ROOF_Z, CAB_TX0, ROOF_HW, ROOF_Z,
+        CAB_TX1, ROOF_HW, ROOF_Z, CAB_TX1, -ROOF_HW, ROOF_Z);
+    fillShaded(canvas, carPath, SH_ROOF, SH_ROOF);
+    // 8. 급감속 램프 띠
+    if (braking) {
+      shade.setPathEffect(new CornerPathEffect(target * 0.04f));
+      face(carPath, 0, -CAR_HW * 0.86f, 0.52f, 0, CAR_HW * 0.86f, 0.52f,
+          0, CAR_HW * 0.86f, 0.66f, 0, -CAR_HW * 0.86f, 0.66f);
+      fillShaded(canvas, carPath, COL_DANGER, COL_DANGER);
+    }
+    shade.setPathEffect(null);
 
     // 노면 위 위치를 못박는 삼각형 커서. 꼭짓점이 차를 가리킨다.
-    float cw = Math.max(10f, wpx * 0.36f);
+    fill.setColor(color);
+    fill.setAlpha(255);
+    float cw = Math.max(10f, target * 0.36f);
     float ch = cw * 0.80f;
-    float cTop = base + 3f;
+    float cTop = carAy + 4f;
     scratch.reset();
-    scratch.moveTo(u, cTop);
-    scratch.lineTo(u - cw * 0.5f, cTop + ch);
-    scratch.lineTo(u + cw * 0.5f, cTop + ch);
+    scratch.moveTo(carAx, cTop);
+    scratch.lineTo(carAx - cw * 0.5f, cTop + ch);
+    scratch.lineTo(carAx + cw * 0.5f, cTop + ch);
     scratch.close();
     canvas.drawPath(scratch, fill);
 
@@ -646,14 +718,192 @@ public class HudView extends View {
     int kmh = vehicleSpeed(v);
     if (kmh >= 0 && (primary || d <= SPEED_LABEL_MAX_M)) {
       String s = String.valueOf(kmh);
-      drawLabel(canvas, s, u - labelPaint.measureText(s) * 0.5f, cTop + ch + SZ_LABEL, color);
+      drawLabel(canvas, s, carAx - labelPaint.measureText(s) * 0.5f, cTop + ch + SZ_LABEL, color);
     }
 
     // 거리는 주된 앞차만. 모든 차에 붙이면 지평선이 숫자로 덮인다.
     if (primary) {
-      String label = String.format("%.0fm", d);
-      drawLabel(canvas, label, u - labelPaint.measureText(label) * 0.5f, top - 10f, color);
+      String label = distText(Math.round(d));
+      drawLabel(canvas, label, carAx - labelPaint.measureText(label) * 0.5f, hullTop - 8f, color);
     }
+  }
+
+  // ---- 차량 3D 모델 ----
+  // 뒤범퍼 바닥 중앙이 원점. x 는 앞, y 는 좌우, z 는 위(m).
+  // 비율은 중형 SUV. 창문과 바퀴는 그리지 않는다(테슬라 시각화와 같은 추상도).
+  // 캐빈을 차체 폭에 가깝게, 뒷경사를 길게 두어 차체와 한 덩어리로 이어지게 한다.
+
+  private static final float CAR_L = 4.6f;
+  private static final float CAR_HW = 0.93f;
+  private static final float BODY_Z0 = 0.22f;
+  private static final float BODY_Z1 = 0.80f;
+  private static final float CAB_X0 = 0.70f, CAB_X1 = 3.60f;    // 캐빈 밑변 앞뒤
+  private static final float CAB_TX0 = 1.60f, CAB_TX1 = 3.05f;  // 지붕 앞뒤
+  private static final float CAB_HW = 0.88f, ROOF_HW = 0.70f;
+  private static final float ROOF_Z = 1.38f;
+
+  // 바퀴. 휠베이스 2.9m, 지름 0.68m. 차체 하단(BODY_Z0)보다 아래로 내려와
+  // 차가 땅에 붙어 있는 느낌을 준다.
+  private static final float WHEEL_R = 0.34f;
+  private static final float TIRE_W = 0.26f;
+  private static final float AXLE_REAR = 0.85f;
+  private static final float[] AXLES = {AXLE_REAR, AXLE_REAR + 2.9f};
+
+  // 명암. 위가 밝고 아래가 어둡다. 가장 어두운 값도 콤바이너에서 사라지지
+  // 않도록 100 아래로 내리지 않는다.
+  private static final int SH_HULL_TOP = Color.rgb(222, 222, 222);
+  private static final int SH_HULL_BOTTOM = Color.rgb(112, 112, 112);
+  private static final int SH_ROOF = Color.rgb(236, 236, 236);
+  private static final int SH_DECK = Color.rgb(222, 222, 222);
+  private static final int SH_CAB_REAR_TOP = Color.rgb(226, 226, 226);
+  private static final int SH_CAB_REAR_BOTTOM = Color.rgb(200, 200, 200);
+  private static final int SH_CAB_SIDE_TOP = Color.rgb(196, 196, 196);
+  private static final int SH_CAB_SIDE_BOTTOM = Color.rgb(158, 158, 158);
+  private static final int SH_REAR_TOP = Color.rgb(208, 208, 208);
+  private static final int SH_REAR_BOTTOM = Color.rgb(126, 126, 126);
+  private static final int SH_SIDE_TOP = Color.rgb(172, 172, 172);
+  private static final int SH_SIDE_BOTTOM = Color.rgb(104, 104, 104);
+  // 타이어는 차체보다 확실히 어둡게. 그래도 0 이면 투사되지 않아 바퀴 자리가
+  // 구멍으로 보이므로 조금은 밝혀 둔다.
+  private static final int SH_TIRE = Color.rgb(58, 58, 58);
+  private static final int SH_HUB_TOP = Color.rgb(176, 176, 176);
+  private static final int SH_HUB_BOTTOM = Color.rgb(120, 120, 120);
+
+  /** 볼록껍질을 만들 꼭짓점. 차체 8 + 캐빈 8. 매 프레임 새로 만들지 않도록 둔다. */
+  private static final float[][] HULL_PTS = {
+      {0, -CAR_HW, BODY_Z0}, {0, CAR_HW, BODY_Z0}, {0, -CAR_HW, BODY_Z1}, {0, CAR_HW, BODY_Z1},
+      {CAR_L, -CAR_HW, BODY_Z0}, {CAR_L, CAR_HW, BODY_Z0}, {CAR_L, -CAR_HW, BODY_Z1}, {CAR_L, CAR_HW, BODY_Z1},
+      {CAB_X0, -CAB_HW, BODY_Z1}, {CAB_X0, CAB_HW, BODY_Z1}, {CAB_X1, -CAB_HW, BODY_Z1}, {CAB_X1, CAB_HW, BODY_Z1},
+      {CAB_TX0, -ROOF_HW, ROOF_Z}, {CAB_TX0, ROOF_HW, ROOF_Z}, {CAB_TX1, -ROOF_HW, ROOF_Z}, {CAB_TX1, ROOF_HW, ROOF_Z},
+  };
+
+  private final Paint shade = new Paint(Paint.ANTI_ALIAS_FLAG);
+  private final Path carPath = new Path();
+  private final android.graphics.RectF carBounds = new android.graphics.RectF();
+  private final float[] hx = new float[16];
+  private final float[] hy = new float[16];
+  private final int[] hIdx = new int[16];
+  private final int[] hOut = new int[34];
+
+  // 지금 그리는 차의 위치와 배율. drawVehicle 이 채운다.
+  private float carD, carLat, carAx, carAy, carK;
+
+  private float carX(float x, float y) {
+    return carAx + (proj.screenX(carD + x, carLat + y) - carAx) * carK;
+  }
+
+  private float carY(float x, float z) {
+    return carAy + (proj.screenY(carD + x, z) - carAy) * carK;
+  }
+
+  /** 3D 사각형 면 하나를 화면 경로로 만든다. */
+  private void face(Path p,
+      float x0, float y0, float z0, float x1, float y1, float z1,
+      float x2, float y2, float z2, float x3, float y3, float z3) {
+    p.reset();
+    p.moveTo(carX(x0, y0), carY(x0, z0));
+    p.lineTo(carX(x1, y1), carY(x1, z1));
+    p.lineTo(carX(x2, y2), carY(x2, z2));
+    p.lineTo(carX(x3, y3), carY(x3, z3));
+    p.close();
+  }
+
+  /** 옆면(y 고정) 위의 원을 투영한다. 원근 때문에 화면에서는 타원이 된다. */
+  private void wheel(Path p, float axleX, float y, float r) {
+    p.reset();
+    for (int i = 0; i < 20; i++) {
+      double t = i * Math.PI / 10;
+      float x = axleX + (float) (r * Math.cos(t));
+      float z = WHEEL_R + (float) (r * Math.sin(t));
+      if (i == 0) {
+        p.moveTo(carX(x, y), carY(x, z));
+      } else {
+        p.lineTo(carX(x, y), carY(x, z));
+      }
+    }
+    p.close();
+  }
+
+  /** 위에서 아래로 top -> bottom 명암을 준다. 같은 색이면 셰이더를 만들지 않는다. */
+  private void fillShaded(Canvas canvas, Path p, int top, int bottom) {
+    shade.setStyle(Paint.Style.FILL);
+    if (top == bottom) {
+      shade.setShader(null);
+      shade.setColor(top);
+    } else {
+      p.computeBounds(carBounds, true);
+      shade.setColor(Color.WHITE);
+      shade.setShader(new android.graphics.LinearGradient(0f, carBounds.top, 0f, carBounds.bottom,
+          top, bottom, android.graphics.Shader.TileMode.CLAMP));
+    }
+    canvas.drawPath(p, shade);
+    shade.setShader(null);
+  }
+
+  /**
+   * 차체와 캐빈의 꼭짓점 16개로 볼록껍질을 만들어 p 에 담는다(모노톤 체인).
+   * 차는 거의 볼록하므로 껍질이 곧 덩어리의 외곽이 된다.
+   *
+   * @return 껍질의 가장 위 y. 거리 글자를 그 위에 둔다.
+   */
+  private float hull(Path p) {
+    int n = 0;
+    float top = Float.MAX_VALUE;
+    for (float[] q : HULL_PTS) {
+      hx[n] = carX(q[0], q[1]);
+      hy[n] = carY(q[0], q[2]);
+      top = Math.min(top, hy[n]);
+      hIdx[n] = n;
+      n++;
+    }
+    // x, 다음 y 순 삽입 정렬. 16개라 이걸로 충분하다.
+    for (int i = 1; i < n; i++) {
+      int k = hIdx[i];
+      int j = i - 1;
+      while (j >= 0 && (hx[hIdx[j]] > hx[k] || (hx[hIdx[j]] == hx[k] && hy[hIdx[j]] > hy[k]))) {
+        hIdx[j + 1] = hIdx[j];
+        j--;
+      }
+      hIdx[j + 1] = k;
+    }
+    int m = 0;
+    for (int i = 0; i < n; i++) {
+      while (m >= 2 && cross(hOut[m - 2], hOut[m - 1], hIdx[i]) <= 0) {
+        m--;
+      }
+      hOut[m++] = hIdx[i];
+    }
+    int lower = m + 1;
+    for (int i = n - 2; i >= 0; i--) {
+      while (m >= lower && cross(hOut[m - 2], hOut[m - 1], hIdx[i]) <= 0) {
+        m--;
+      }
+      hOut[m++] = hIdx[i];
+    }
+    p.reset();
+    p.moveTo(hx[hOut[0]], hy[hOut[0]]);
+    for (int i = 1; i < m - 1; i++) {
+      p.lineTo(hx[hOut[i]], hy[hOut[i]]);
+    }
+    p.close();
+    return top;
+  }
+
+  private float cross(int o, int a, int b) {
+    return (hx[a] - hx[o]) * (hy[b] - hy[o]) - (hy[a] - hy[o]) * (hx[b] - hx[o]);
+  }
+
+  /**
+   * 거리 표기. 999m 까지는 m, 1000m 부터는 km 로 소수 한 자리.
+   *
+   * 구간단속은 1200m 처럼 네 자리가 나오는데, 자릿수가 갑자기 늘면 힐끗 볼 때
+   * 1200 과 120 을 헷갈린다. 1.2km 는 자릿수가 늘 같다.
+   */
+  private static String distText(int meters) {
+    if (meters < 1000) {
+      return meters + "m";
+    }
+    return String.format("%.1fkm", meters / 1000f);
   }
 
   /** 도로 위에 놓이는 글자. 검은 테두리를 먼저 그려 배경과 갈라놓는다. */
@@ -705,7 +955,8 @@ public class HudView extends View {
 
     boolean enforced = camera > 0 && dist > 0;
     int value = enforced ? camera : limit;
-    float cx = w - 62f, cy = proj.safeTop() + 42f;
+    // 화면 오른쪽 끝에 너무 붙어 있어 잘 안 보인다는 실차 피드백. 10px 당긴다.
+    float cx = w - 72f, cy = proj.safeTop() + 42f;
     float labelY = cy + 58f;
 
     if (value > 0) {
@@ -721,7 +972,7 @@ public class HudView extends View {
 
       if (enforced) {
         labelPaint.setColor(COL_ROAD);
-        String label = (section ? "구간 " : "") + dist + "m";
+        String label = (section ? "구간 " : "") + distText(dist);
         canvas.drawText(label, labelLeft(cx, labelPaint.measureText(label), w), labelY, labelPaint);
         labelY += 26f;
       }
@@ -729,7 +980,7 @@ public class HudView extends View {
 
     if (bump > 0) {
       labelPaint.setColor(COL_CAUTION);
-      String label = "방지턱 " + bump + "m";
+      String label = "방지턱 " + distText(bump);
       canvas.drawText(label, labelLeft(cx, labelPaint.measureText(label), w),
           value > 0 ? labelY : cy, labelPaint);
       labelPaint.setColor(COL_ROAD);
@@ -821,7 +1072,7 @@ public class HudView extends View {
       if (sb.length() > 0) {
         sb.append("  ");
       }
-      sb.append(arrow).append(' ').append(turnDist).append('m');
+      sb.append(arrow).append(' ').append(distText(turnDist));
     }
     // 목표속도는 위 둘 중 하나라도 있을 때만 적는다. 평소 주행에서는
     // 제한속도와 같은 값이 계속 떠 있어 읽을 것만 늘린다.

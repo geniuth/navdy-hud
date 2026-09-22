@@ -108,6 +108,11 @@ public class Projection {
     return horizon + focal * camH / Math.max(MIN_X, x);
   }
 
+  /** 높이 z(m)인 점의 화면 y. 차량처럼 높이가 있는 물체를 입체로 그릴 때 쓴다. */
+  public float screenY(float x, float z) {
+    return horizon + focal * (camH - z) / Math.max(MIN_X, x);
+  }
+
   /** 거리 x 에서 폭 meters 가 화면에서 차지하는 픽셀. 아이콘 크기 조절용. */
   public float scale(float x, float meters) {
     return focal * meters / Math.max(MIN_X, x);
