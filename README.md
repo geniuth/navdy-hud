@@ -118,11 +118,35 @@ adb shell am start -n kr.geniu.navdyhud/.HudActivity                  # 콤마 �
 adb shell am start -n kr.geniu.navdyhud/.HudActivity --ez demo true   # 데모
 ```
 
-순정 Navdy 화면으로 돌아가려면:
+순정 Navdy 화면으로는 **다이얼을 1.2초 누르면** 넘어간다(3분 뒤 HUD 자동 복귀).
+adb 로 직접 부를 수도 있다:
 
 ```powershell
 adb shell am start -n com.navdy.hud.app/.ui.activity.MainActivity
 ```
+
+### USB 로 업데이트 (adb 없이)
+
+집에서는 12V 를 물릴 수 없어 나브디가 부팅하지 않고, 그러면 adb 도 붙지 않는다.
+대신 USB 만 꽂으면 대용량저장소로 잡힌다. 그 드라이브가 기기 안에서는 `/maps`
+다(vfat, 누구나 쓰기 가능).
+
+1. 집에서 USB 로 꽂고, 잡힌 드라이브 최상위에 `CommaHUD.apk` 를 복사한다
+2. 차에서 전원이 들어오면 부팅 10초 뒤 설치 화면이 뜬다
+3. 다이얼로 확인한다 — 아래로 눌러 버튼 줄, 오른쪽이 INSTALL, 클릭이 확정
+
+취소해도 90초 뒤 HUD 는 올라온다. 이미 설치한 버전이면 화면이 뜨지 않는다
+(`versionCode` 비교. build.ps1 이 빌드할 때마다 올린다).
+
+**선행 조건**: '알 수 없는 소스' 가 켜져 있어야 한다. 한 번만 하면 secure
+설정이라 재부팅해도 남는다.
+
+```powershell
+adb shell settings put secure install_non_market_apps 1
+```
+
+설치까지 자동으로 하려면 root 가 필요한데, `/sbin/su` 가 `root:shell` 이라
+앱(u0_aNN)은 쓸 수 없다. 그래서 확인 한 번은 남는다.
 
 ### 데모 모드
 
@@ -143,6 +167,8 @@ adb shell am start -n com.navdy.hud.app/.ui.activity.MainActivity
 | 6 | 구간단속 | "구간" 접두 |
 | 7 | 방지턱 + 우측 사각지대 | 방지턱 표시, 좌우 대칭 |
 | 8 | 송신 중단 | 낡은 데이터 차단 |
+| 9 | 인게이지 해제 | 경로 띠가 흰 외곽선만 |
+| 10 | 커브 감속 + 좌회전 안내 | 주황색 한 줄 |
 
 ## 구성
 

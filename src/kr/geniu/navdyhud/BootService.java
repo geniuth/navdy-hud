@@ -24,6 +24,14 @@ public class BootService extends Service {
   /** 순정 UI 가 자리를 잡는 데 걸리는 시간을 넘겨 잡았다. */
   private static final long[] DELAYS_MS = {10000L, 30000L};
 
+  /**
+   * USB 로 넣어 둔 업데이트가 있을 때 HUD 를 띄우는 시각.
+   *
+   * 설치 화면을 먼저 띄우고, 사용자가 다이얼로 확인할 시간을 준다. 취소했을
+   * 때를 대비해 결국은 HUD 를 띄운다. 설치를 마쳤다면 그때는 새 앱이다.
+   */
+  private static final long UPDATE_THEN_HUD_MS = 90000L;
+
   private final Handler handler = new Handler();
   private int pending;
 
@@ -33,6 +41,30 @@ public class BootService extends Service {
       // 이미 예약돼 있다. 중복 요청은 무시한다.
       return START_NOT_STICKY;
     }
+    // USB 업데이트가 있으면 HUD 대신 설치 화면을 먼저 띄운다.
+    final java.io.File apk = Updater.pending(this);
+    if (apk != null && Updater.sideloadAllowed(this)) {
+      pending = 1;
+      handler.postDelayed(new Runnable() {
+        @Override
+        public void run() {
+          Updater.install(BootService.this, apk);
+        }
+      }, DELAYS_MS[0]);
+      handler.postDelayed(new Runnable() {
+        @Override
+        public void run() {
+          launch();
+          pending = 0;
+          stopSelf();
+        }
+      }, UPDATE_THEN_HUD_MS);
+      return START_NOT_STICKY;
+    }
+    if (apk != null) {
+      Log.w(TAG, "USB 업데이트가 있지만 '알 수 없는 소스' 가 꺼져 있다");
+    }
+
     pending = DELAYS_MS.length;
     for (long delay : DELAYS_MS) {
       handler.postDelayed(new Runnable() {

@@ -14,7 +14,12 @@ Remove-Item -Recurse -Force "$P\build\classes", "$P\build\gen" -ErrorAction Sile
 New-Item -ItemType Directory -Force -Path "$P\build\classes" | Out-Null
 
 & "$bt\aapt2.exe" compile --dir res -o build\res.zip
+# versionCode 를 빌드할 때마다 올린다. USB 업데이트(Updater.java)가 이 값으로만
+# 새 빌드인지 판단하므로, 고정돼 있으면 새 APK 를 넣어도 설치 화면이 안 뜬다.
+$vcode = [int][double]::Parse((Get-Date -UFormat %s))
+$vname = Get-Date -Format "yyyy.MM.dd.HHmm"
 & "$bt\aapt2.exe" link -o build\base.apk -I $jar --manifest AndroidManifest.xml `
+    --replace-version --version-code $vcode --version-name $vname `
     --java build\gen --min-sdk-version 22 --target-sdk-version 22 build\res.zip
 
 $srcs = (Get-ChildItem -Recurse -Filter *.java src, build\gen -ErrorAction SilentlyContinue |
