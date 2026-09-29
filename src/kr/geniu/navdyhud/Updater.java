@@ -2,6 +2,7 @@ package kr.geniu.navdyhud;
 
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.net.Uri;
@@ -36,14 +37,32 @@ public final class Updater {
   /** 나브디를 USB 로 꽂았을 때 PC 에 보이는 드라이브가 기기에서는 여기다. */
   private static final File APK = new File("/maps/CommaHUD.apk");
 
+  /**
+   * 이미 한 번 물어본 APK 를 기억한다.
+   *
+   * 안 그러면 설치를 취소하거나 놓쳤을 때 전원을 넣을 때마다 설치 화면이 뜬다.
+   * 실제로 그렇게 됐다 - 차에 탈 때마다 HUD 대신 설치 화면이 먼저 나왔다.
+   *
+   * 버전만으로 기억하면 같은 파일을 다시 복사해도 다시 물어보지 않아 되돌릴
+   * 방법이 없다. 파일 수정시각을 같이 넣어, 다시 복사하면(=시각이 바뀌면)
+   * 한 번 더 물어보게 한다.
+   */
+  private static final String PREFS = "updater";
+  private static final String KEY_ASKED = "asked";
+
+  private static String stamp(int versionCode, File f) {
+    return versionCode + ":" + f.lastModified();
+  }
+
   private Updater() {
   }
 
   /**
-   * /maps 에 지금 설치된 것보다 새 APK 가 있으면 그 파일, 없으면 null.
+   * /maps 에 아직 안 물어본 새 APK 가 있으면 그 파일, 없으면 null.
    *
-   * versionCode 로만 판단한다. 같은 값이면 이미 설치한 파일이 그대로 남아
-   * 있는 것이므로 부팅할 때마다 설치 화면이 뜨지 않는다.
+   * 설치된 것보다 versionCode 가 높고, 그 파일로 아직 설치 화면을 띄운 적이
+   * 없어야 한다. 이미 설치했다면 버전이 같아져서, 취소했다면 물어본 기록이
+   * 남아서 각각 걸러진다.
    */
   public static File pending(Context ctx) {
     if (!APK.isFile() || APK.length() == 0) {
@@ -64,8 +83,25 @@ public final class Updater {
     if (incoming.versionCode <= mine) {
       return null;
     }
+    SharedPreferences prefs = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+    String now = stamp(incoming.versionCode, APK);
+    if (now.equals(prefs.getString(KEY_ASKED, ""))) {
+      Log.i(TAG, "USB 업데이트는 이미 물어봤다: " + now);
+      return null;
+    }
     Log.i(TAG, "USB 업데이트 발견: " + mine + " -> " + incoming.versionCode);
     return APK;
+  }
+
+  /** 물어본 것으로 표시한다. 설치 화면을 띄우기 직전에 부른다. */
+  public static void markAsked(Context ctx) {
+    PackageInfo incoming = ctx.getPackageManager()
+        .getPackageArchiveInfo(APK.getAbsolutePath(), 0);
+    if (incoming == null) {
+      return;
+    }
+    ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+        .putString(KEY_ASKED, stamp(incoming.versionCode, APK)).commit();
   }
 
   /** '알 수 없는 소스' 가 꺼져 있으면 설치 화면이 떠도 진행되지 않는다. */
@@ -78,8 +114,14 @@ public final class Updater {
     }
   }
 
-  /** 표준 설치 화면을 띄운다. 실제 설치 여부는 사용자가 정한다. */
+  /**
+   * 표준 설치 화면을 띄운다. 실제 설치 여부는 사용자가 정한다.
+   *
+   * 띄우는 순간 '물어봤다' 로 기록한다. 결과는 알 수 없지만, 설치를 마쳤다면
+   * 다음 부팅 때 버전이 같아져 어차피 안 뜬다.
+   */
   public static boolean install(Context ctx, File apk) {
+    markAsked(ctx);
     Intent i = new Intent(Intent.ACTION_VIEW);
     i.setDataAndType(Uri.fromFile(apk), "application/vnd.android.package-archive");
     i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
