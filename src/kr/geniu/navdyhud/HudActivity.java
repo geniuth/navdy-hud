@@ -50,9 +50,7 @@ public class HudActivity extends Activity implements CommaLink.Listener {
       holding = false;
       Log.i(TAG, "다이얼 길게 누름 - 순정 UI 로 전환");
       scheduleReturn();
-      // 액티비티를 끝내지 않고 뒤로만 보낸다. 콤마 RFCOMM 링크가 살아 있어
-      // 돌아왔을 때 다시 붙기를 기다리지 않아도 된다.
-      moveTaskToBack(true);
+      toStock();
     }
   };
 
@@ -75,6 +73,34 @@ public class HudActivity extends Activity implements CommaLink.Listener {
       link = new CommaLink(this);
       link.start();
     }
+  }
+
+  /**
+   * 순정 나브디 화면으로 넘어간다.
+   *
+   * 전에는 moveTaskToBack 만 했는데, 그건 '순정으로 간다' 가 아니라 '우리가
+   * 비켜난다' 일 뿐이다. 순정 앱이 스택에서 빠져 있으면 시스템이 HOME 인
+   * com.navdy.launcher 를 띄우는데, 그 런처는 아무것도 그리지 않는 깡통이라
+   * 화면이 까맣게 남는다. 실제로 그렇게 됐다.
+   *
+   * 그래서 순정 앱을 직접 띄운다. 우리 액티비티는 끝나지 않고 뒤로 밀리므로
+   * 콤마 RFCOMM 링크는 그대로 살아 있다.
+   */
+  private static final String STOCK_PKG = "com.navdy.hud.app";
+  private static final String STOCK_ACT = "com.navdy.hud.app.ui.activity.MainActivity";
+
+  private void toStock() {
+    Intent i = new Intent();
+    i.setClassName(STOCK_PKG, STOCK_ACT);
+    i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+    try {
+      startActivity(i);
+      return;
+    } catch (RuntimeException e) {
+      Log.w(TAG, "순정 앱 실행 실패, 뒤로만 보낸다: " + e);
+    }
+    // 순정 앱이 없거나 막혀 있으면 최소한 우리 화면은 비켜 준다.
+    moveTaskToBack(true);
   }
 
   /** HUD 로 돌아오는 알람. 프로세스가 죽어도 살아남도록 AlarmManager 를 쓴다. */
