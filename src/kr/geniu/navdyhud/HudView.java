@@ -59,6 +59,8 @@ public class HudView extends View {
   private static final float SZ_ALERT = 38f;   // 상태 경고. 속도보다 작게 둔다
   private static final float SZ_SET   = 22f;   // 인게이지 속도. 속도에 딸린 값
   private static final float SZ_NAV   = 21f;   // 커브/경로 감속 예고
+  /** 도착 정보. 라벨보다 1.3배. 아래쪽에 혼자 있어 작으면 안 읽힌다. */
+  private static final float SZ_DEST  = 26f;
 
   /** 제한속도를 이만큼 넘으면 속도 숫자가 주의색이 된다. GPS 오차와 계기 오차를 뺀 값. */
   private static final int OVER_MARGIN = 2;
@@ -84,6 +86,8 @@ public class HudView extends View {
   private final Paint signPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
   private final Paint setPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
   private final Paint navPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+  private final Paint destPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+  private final Paint destHalo = new Paint(Paint.ANTI_ALIAS_FLAG);
   private final Projection proj = new Projection();
   private final Path scratch = new Path();
 
@@ -144,6 +148,16 @@ public class HudView extends View {
     navPaint.setColor(COL_NAV);
     navPaint.setTextSize(SZ_NAV);
     navPaint.setFakeBoldText(true);
+
+    destPaint.setColor(COL_ROAD);
+    destPaint.setTextSize(SZ_DEST);
+    destPaint.setFakeBoldText(true);
+
+    destHalo.setStyle(Paint.Style.STROKE);
+    destHalo.setStrokeWidth(5f);
+    destHalo.setColor(Color.BLACK);
+    destHalo.setTextSize(SZ_DEST);
+    destHalo.setFakeBoldText(true);
   }
 
   public void update(JSONObject p) {
@@ -217,6 +231,7 @@ public class HudView extends View {
       drawSign(canvas, p, w);
     }
     drawStatus(canvas, p);
+    drawDest(canvas, p);
     drawHint(canvas);
 
     if (stale()) {
@@ -1048,6 +1063,47 @@ public class HudView extends View {
   }
 
   /**
+   * 목적지 도착 예정시각과 남은 시간. 화면 왼쪽 세로 가운데.
+   *
+   * 경로가 없으면(goTime 0) 아무것도 그리지 않는다. 자리만 차지하는
+   * "--:--" 를 띄워 두지 않는다.
+   *
+   * 처음에는 안전영역 바닥에 뒀는데 너무 낮아 시선이 크게 내려갔다.
+   * 세로 가운데로 올리면 속도(위)와도, 도로(가운데)와도 겹치지 않으면서
+   * 눈만 옆으로 돌려 읽을 수 있다. 라벨보다 크게 둔 것도 같은 이유다.
+   *
+   * 색은 흰색이다. 주황은 '곧 느려진다' 예고에만 쓰기로 했고, 도착 정보는
+   * 예고가 아니라 사실이라 그 뜻을 빌려오면 안 된다.
+   */
+  private void drawDest(Canvas canvas, JSONObject p) {
+    int sec = p.optInt("goTime", 0);
+    if (sec <= 0) {
+      return;
+    }
+    String s = arrivalAt(sec) + " 도착 · " + remainText(sec);
+    float y = (proj.safeTop() + proj.safeBottom()) * 0.5f + SZ_DEST * 0.35f;
+    canvas.drawText(s, 16f, y, destHalo);
+    canvas.drawText(s, 16f, y, destPaint);
+  }
+
+  /** 지금부터 sec 초 뒤의 시각. 24시간제. */
+  private static String arrivalAt(int sec) {
+    java.util.Calendar c = java.util.Calendar.getInstance();
+    c.add(java.util.Calendar.SECOND, sec);
+    return String.format("%02d:%02d", c.get(java.util.Calendar.HOUR_OF_DAY),
+        c.get(java.util.Calendar.MINUTE));
+  }
+
+  /** 남은 시간. 분 단위로 반올림하고, 한 시간이 넘으면 시간을 앞에 붙인다. */
+  private static String remainText(int sec) {
+    int m = (sec + 30) / 60;
+    if (m < 60) {
+      return m + "분";
+    }
+    return (m / 60) + "시간 " + (m % 60) + "분";
+  }
+
+  /**
    * 커브/경로 감속 예고. 속도 아래 한 줄에 주황색으로 모은다.
    *
    *   VT 45     시야 커브에서 낼 수 있는 속도
@@ -1059,46 +1115,20 @@ public class HudView extends View {
    */
   private void drawNav(Canvas canvas, JSONObject p, float y) {
     int vturn = p.optInt("vTurnSpeed", 0);
-    int turn = p.optInt("turnInfo", -1);
-    int turnDist = p.optInt("turnDist", 0);
     int desired = p.optInt("desiredSpeed", 0);
 
-    StringBuilder sb = new StringBuilder();
-    if (vturn > 0) {
-      sb.append("VT ").append(vturn);
-    }
-    String arrow = turnArrow(turn);
-    if (arrow != null && turnDist > 0) {
-      if (sb.length() > 0) {
-        sb.append("  ");
-      }
-      sb.append(arrow).append(' ').append(distText(turnDist));
-    }
-    // 목표속도는 위 둘 중 하나라도 있을 때만 적는다. 평소 주행에서는
-    // 제한속도와 같은 값이 계속 떠 있어 읽을 것만 늘린다.
-    if (desired > 0 && sb.length() > 0) {
-      sb.append("  ▼ ").append(desired);
-    }
-    if (sb.length() == 0) {
+    // 커브 감속만 남긴다. 경로 안내 화살표(좌회전 120m 같은)는 뺐다 -
+    // 내비 화면이 이미 하는 일이고, HUD 에서는 읽을 것만 늘렸다.
+    if (vturn <= 0) {
       return;
+    }
+    StringBuilder sb = new StringBuilder("VT ").append(vturn);
+    // 목표속도는 커브가 있을 때만 적는다. 평소 주행에서는 제한속도와 같은
+    // 값이 계속 떠 있어 읽을 것만 늘린다.
+    if (desired > 0) {
+      sb.append("  ▼ ").append(desired);
     }
     canvas.drawText(sb.toString(), 16f, y, navPaint);
   }
 
-  /**
-   * 경로 안내 기호. carrot 의 xTurnInfo 규약을 따른다.
-   * 1 좌회전 2 우회전 3 좌차선변경 4 우차선변경 5 로터리 6 톨게이트 7 도착/유턴.
-   */
-  private String turnArrow(int turn) {
-    switch (turn) {
-      case 1: return "↰";   // 좌회전
-      case 2: return "↱";   // 우회전
-      case 3: return "←";   // 좌차선변경
-      case 4: return "→";   // 우차선변경
-      case 5: return "↻";   // 로터리
-      case 6: return "TG";
-      case 7: return "↩";   // 도착/유턴
-      default: return null;
-    }
-  }
 }

@@ -110,10 +110,8 @@ public class DemoSource {
         case 8:   // 디스인게이지: 경로 띠가 흰색이어야 한다
           p.put("lead", lead(45f, 0f, -3f, 0f));
           break;
-        case 9:   // 커브 감속 + 좌회전 안내. 주황색 한 줄이 뜬다
+        case 9:   // 커브 감속. 주황색 한 줄이 뜬다
           p.put("vTurnSpeed", 45);
-          p.put("turnInfo", 1);
-          p.put("turnDist", Math.round(300 - 240 * t));
           p.put("desiredSpeed", 45);
           speed = 68;
           break;
@@ -128,6 +126,8 @@ public class DemoSource {
       // 8번만 해제 상태로 두어 경로 띠 색이 갈리는 것을 본다.
       p.put("enabled", scene != 8);
       p.put("set", 70);
+      // 목적지까지 32분. 도착 예정시각과 남은 시간이 왼쪽 아래에 뜬다.
+      p.put("goTime", 32 * 60);
     } catch (Exception ignored) {
       // JSONObject.put 은 값이 NaN 일 때만 던진다. 여기서는 나올 수 없다.
     }
