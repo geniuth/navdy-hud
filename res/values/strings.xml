@@ -1,2 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<resources><string name="app_name">CommaHUD</string></resources>
+<resources>
+  <string name="app_name">CommaHUD</string>
+  <string name="dial_service_desc">다이얼을 길게 누르면 HUD 와 나브디 화면을 오갑니다.</string>
+</resources>

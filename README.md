@@ -118,7 +118,19 @@ adb shell am start -n kr.geniu.navdyhud/.HudActivity                  # 콤마 �
 adb shell am start -n kr.geniu.navdyhud/.HudActivity --ez demo true   # 데모
 ```
 
-순정 Navdy 화면으로는 **다이얼을 1.2초 누르면** 넘어간다(3분 뒤 HUD 자동 복귀).
+**다이얼을 1.2초 누르면 HUD 와 순정 Navdy 화면(지도·대시)을 오간다.** 어느 쪽에
+있든 같은 동작이다. 접근성 서비스(`DialService`)가 전면 앱과 상관없이 다이얼을
+보기 때문이다. 순정 메뉴의 클릭·회전은 그대로 동작한다.
+
+처음 한 번 adb 로 켜야 한다(재부팅해도 유지):
+
+```powershell
+adb shell settings put secure enabled_accessibility_services kr.geniu.navdyhud/kr.geniu.navdyhud.DialService
+adb shell settings put secure accessibility_enabled 1
+```
+
+서비스가 꺼져 있으면 HUD 에서 순정으로 가는 길만 남고, 대신 3분 뒤 HUD 로
+자동 복귀한다.
 adb 로 직접 부를 수도 있다:
 
 ```powershell

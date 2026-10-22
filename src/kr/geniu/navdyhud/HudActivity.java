@@ -25,7 +25,7 @@ public class HudActivity extends Activity implements CommaLink.Listener {
    * 안드로이드 기본 롱프레스(약 0.5초)로는 짧다. 다이얼은 돌리다가 눌리기도
    * 하는데 그때마다 화면이 넘어가면 주행 중에 곤란하다.
    */
-  private static final long HOLD_MS = 1200;
+  static final long HOLD_MS = 1200;
 
   /**
    * 순정 UI 로 빠진 뒤 이만큼 지나면 HUD 로 저절로 돌아온다.
@@ -49,7 +49,10 @@ public class HudActivity extends Activity implements CommaLink.Listener {
     public void run() {
       holding = false;
       Log.i(TAG, "다이얼 길게 누름 - 순정 UI 로 전환");
-      scheduleReturn();
+      // 다이얼 서비스가 없으면 돌아올 길이 없으므로 자동 복귀를 걸어 둔다.
+      if (!DialService.running) {
+        scheduleReturn();
+      }
       toStock();
     }
   };
@@ -90,17 +93,36 @@ public class HudActivity extends Activity implements CommaLink.Listener {
   private static final String STOCK_ACT = "com.navdy.hud.app.ui.activity.MainActivity";
 
   private void toStock() {
+    if (launchStock(this)) {
+      return;
+    }
+    // 순정 앱이 없거나 막혀 있으면 최소한 우리 화면은 비켜 준다.
+    moveTaskToBack(true);
+  }
+
+  /** 순정 나브디 화면을 띄운다. DialService 도 같은 길을 쓴다. */
+  static boolean launchStock(Context ctx) {
     Intent i = new Intent();
     i.setClassName(STOCK_PKG, STOCK_ACT);
     i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
     try {
-      startActivity(i);
-      return;
+      ctx.startActivity(i);
+      return true;
     } catch (RuntimeException e) {
-      Log.w(TAG, "순정 앱 실행 실패, 뒤로만 보낸다: " + e);
+      Log.w(TAG, "순정 앱 실행 실패: " + e);
+      return false;
     }
-    // 순정 앱이 없거나 막혀 있으면 최소한 우리 화면은 비켜 준다.
-    moveTaskToBack(true);
+  }
+
+  /** HUD 를 앞으로 가져온다. singleTask 라 떠 있던 것을 그대로 올린다. */
+  static void launchHud(Context ctx) {
+    Intent i = new Intent(ctx, HudActivity.class);
+    i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+    try {
+      ctx.startActivity(i);
+    } catch (RuntimeException e) {
+      Log.w(TAG, "HUD 실행 실패: " + e);
+    }
   }
 
   /** HUD 로 돌아오는 알람. 프로세스가 죽어도 살아남도록 AlarmManager 를 쓴다. */
@@ -137,7 +159,7 @@ public class HudActivity extends Activity implements CommaLink.Listener {
    * 나브디 다이얼 클릭. HID 로는 KEY_ENTER 가 온다(실측).
    * 일부 펌웨어/런처가 DPAD_CENTER 로 주기도 하므로 둘 다 받는다.
    */
-  private static boolean isDialClick(int keyCode) {
+  static boolean isDialClick(int keyCode) {
     return keyCode == KeyEvent.KEYCODE_ENTER
         || keyCode == KeyEvent.KEYCODE_DPAD_CENTER
         || keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER;
@@ -147,9 +169,13 @@ public class HudActivity extends Activity implements CommaLink.Listener {
   public boolean onKeyDown(int keyCode, KeyEvent event) {
     if (isDialClick(keyCode)) {
       // 키 반복은 무시한다. 누르기 시작한 첫 이벤트에서만 타이머를 건다.
+      // 다이얼 서비스가 돌면 길게 누르기는 그쪽이 처리한다. 여기서도 걸면
+      // 둘이 동시에 전환을 일으킨다. 짧게 누른 안내만 이쪽에서 한다.
       if (event.getRepeatCount() == 0 && !holding) {
         holding = true;
-        handler.postDelayed(switchToStock, HOLD_MS);
+        if (!DialService.running) {
+          handler.postDelayed(switchToStock, HOLD_MS);
+        }
       }
       return true;
     }
@@ -167,7 +193,9 @@ public class HudActivity extends Activity implements CommaLink.Listener {
         //
         // Toast 를 쓰면 안 된다. 이 펌웨어에는 NotificationManager 서비스가
         // 없어서 Toast.show() 가 NPE 로 앱을 죽인다(실제로 죽였다).
-        view.showHint("길게 누르면 나브디 화면 (3분 뒤 자동 복귀)", 1800);
+        view.showHint(DialService.running
+            ? "길게 누르면 나브디 화면 (거기서 다시 길게 누르면 복귀)"
+            : "길게 누르면 나브디 화면 (3분 뒤 자동 복귀)", 1800);
       }
       return true;
     }

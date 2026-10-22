@@ -27,5 +27,16 @@
       </intent-filter>
     </receiver>
     <service android:name=".BootService" />
+
+    <!-- 어느 화면에서든 다이얼 길게 누르기로 HUD 와 순정 화면을 오간다.
+         켜는 법은 DialService.java 주석 참고(adb 로 한 번). -->
+    <service android:name=".DialService"
+             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+      <intent-filter>
+        <action android:name="android.accessibilityservice.AccessibilityService" />
+      </intent-filter>
+      <meta-data android:name="android.accessibilityservice"
+                 android:resource="@xml/dial_service" />
+    </service>
   </application>
 </manifest>
