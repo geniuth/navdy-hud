@@ -182,6 +182,43 @@ adb shell settings put secure install_non_market_apps 1
 | 9 | 인게이지 해제 | 경로 띠가 흰 외곽선만 |
 | 10 | 커브 감속 + 좌회전 안내 | 주황색 한 줄 |
 
+## 순정 대시 모드 (ID.4 프로필)
+
+나브디 순정 대시 화면의 좌우 항목은 `/maps/nmirror_obd.js`(nMirror) 가 정한다.
+원래 파일은 현대·기아 디젤용(DPF, 미션온도)이라 ID.4 에서는 전부 `--` 였다.
+[dash/nmirror_obd_id4.js](dash/nmirror_obd_id4.js) 로 바꿨다.
+
+| 위치 | 항목 | 출처 |
+|---|---|---|
+| 속도 위 | 배터리 잔량(계기판 환산) | BMS `22028C` |
+| 왼쪽 | 시각 · 외기 · 배터리 온도 · 내비 도착 | 내장 / `0146` / BMS `222A0B` / 내장 |
+| 오른쪽 | 출력(kW) · 고전압 · 12V | BMS `221E3D`×`221E3B` / BMS / `ATRV` |
+
+BMS 주소(`0x17FC007B`, 29비트)와 식은 [spot2000 MEB 목록](https://github.com/spot2000/Volkswagen-MEB-EV-CAN-parameters)과
+[ABRP MEB.json](https://github.com/iternio/ev-obd-pids/blob/main/volkswagen/MEB.json) 에서 가져왔다.
+
+순정 HUD 앱을 디컴파일해 확인한 동작:
+
+- `ModeAndPID` 는 칩에 그대로 보낸다(`ATRV` 같은 AT 명령도 된다)
+- `Header` 가 바뀔 때만 `ATSH` 를 보내고, 빈 헤더로 돌아갈 때는 되돌리지 않는다.
+  그래서 모든 OBD 항목에 헤더를 적고, 속도도 `requiredPids` 로 표준 헤더와 함께 다시
+  정의했다. 안 그러면 배터리 항목 다음에 속도 요청이 BMS 로 가서 속도가 멈춘다
+- `A` 는 요청을 되돌려준 바이트(서비스+DID) 다음 첫 데이터 바이트
+
+적용과 복원:
+
+```powershell
+adb push dash
+mirror_obd_id4.js /maps/nmirror_obd.js
+adb push dash
+mirror_obd_id4.js /maps/nmirror_obd_minimal.js
+adb shell am force-stop com.navdy.hud.app
+# 원래대로: /maps 의 *.hyundai.bak 을 원래 이름으로 되돌린다
+```
+
+**미검증**: BMS 응답이 칩의 자동 수신 필터를 통과하는지. 안 되면 배터리 항목만
+`--` 로 남고 속도·12V·외기온도는 그대로 동작한다. 출력(kW)의 부호도 실차 확인 전이다.
+
 ## 구성
 
 | 파일 | 역할 |
