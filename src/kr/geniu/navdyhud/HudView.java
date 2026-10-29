@@ -1097,46 +1097,79 @@ public class HudView extends View {
   // ---- 4-1. 신호등 ----
 
   /**
-   * openpilot 이 모델로 읽은 신호. 화면 위 가운데, 지평선 위 빈 하늘에 둔다.
+   * TMAP 안내의 신호등. 화면 위 가운데, 지평선 위 빈 하늘에 둔다.
    *
-   * 값은 longitudinalPlan.trafficState 다. 카메라가 신호등 색을 직접 읽은 것이
-   * 아니라 주행 모델이 '여기서 선다(1)' / '이제 간다(2)' 고 판단한 결과라 노란불은
-   * 없다. 신호등 모양을 빌려 그 판단을 보여 준다.
+   *   (●) 23     켜진 등과 남은 초
+   *    140m      교차로까지 거리
    *
-   * 두 칸짜리 등을 그리고 켜진 칸만 채운다. 빈 칸도 테두리는 남겨야 색이
-   * 잘 안 보일 때도 왼쪽(정지)인지 오른쪽(출발)인지로 읽힌다.
-   * 정지면 정지 지점까지 거리를 아래에 적는다.
+   * 송신 쪽 tmapSignal = {l: 등, s: 남은 초, d: 거리}. 등은 red/green/left/
+   * right/uturn 중 켜진 것 하나다. TMAP 이 신호 정보를 가진 교차로에서만 온다.
+   *
+   * openpilot 모델의 신호 추정(trafficState)은 그리지 않는다. 모델은 신호등을
+   * 분류하지 않고 경로가 멈추는지만 보므로, 실제 신호처럼 보여 주면 오해를 산다.
+   *
+   * 진행 신호(초록, 좌·우회전, 유턴)는 초록 원 안을 검게 뚫어 방향을 낸다.
+   * 검은색은 투사되지 않으므로 원 안의 빈 모양으로 읽힌다.
    */
-  private static final float TL_R = 13f;
-  private final android.graphics.RectF tlBox = new android.graphics.RectF();
+  private static final float TL_R = 15f;
+  private final Path tlPath = new Path();
 
   private void drawTraffic(Canvas canvas, JSONObject p) {
-    int state = p.optInt("trafficState", 0);
-    if (state != 1 && state != 2) {
+    JSONObject sig = p.optJSONObject("tmapSignal");
+    if (sig == null) {
       return;
     }
-    float cx = proj.centerX(), cy = proj.safeTop() + 26f;
-    float gap = TL_R * 2.6f;
-    float redX = cx - gap * 0.5f, greenX = cx + gap * 0.5f;
+    String lamp = sig.optString("l", "");
+    int remain = sig.optInt("s", 0);
+    int dist = sig.optInt("d", 0);
+    boolean red = "red".equals(lamp);
+    if (remain <= 0 || !(red || "green".equals(lamp) || "left".equals(lamp)
+        || "right".equals(lamp) || "uturn".equals(lamp))) {
+      return;
+    }
 
-    stroke.setColor(COL_ROAD);
-    stroke.setAlpha(255);
-    stroke.setStrokeWidth(3f);
-    stroke.setPathEffect(null);
-    tlBox.set(redX - TL_R - 7f, cy - TL_R - 7f, greenX + TL_R + 7f, cy + TL_R + 7f);
-    canvas.drawRoundRect(tlBox, TL_R, TL_R, stroke);
+    String sec = String.valueOf(remain);
+    float textW = signPaint.measureText(sec);
+    float total = TL_R * 2f + 10f + textW;
+    float lx = proj.centerX() - total * 0.5f + TL_R;
+    float cy = proj.safeTop() + TL_R + 8f;
 
-    stroke.setStrokeWidth(2f);
-    canvas.drawCircle(redX, cy, TL_R, stroke);
-    canvas.drawCircle(greenX, cy, TL_R, stroke);
-    fill.setColor(state == 1 ? COL_DANGER : COL_SYSTEM);
+    fill.setColor(red ? COL_DANGER : COL_SYSTEM);
     fill.setAlpha(255);
-    canvas.drawCircle(state == 1 ? redX : greenX, cy, TL_R - 1f, fill);
+    canvas.drawCircle(lx, cy, TL_R, fill);
+    fill.setColor(Color.BLACK);
+    if ("left".equals(lamp) || "right".equals(lamp)) {
+      // 화살표. 글자와 같은 화면 좌표로 그리므로 글자가 바로 읽히는 한 방향도 맞다.
+      float dir = "left".equals(lamp) ? -1f : 1f;
+      float r = TL_R * 0.62f;
+      tlPath.reset();
+      tlPath.moveTo(lx + dir * r, cy);
+      tlPath.lineTo(lx + dir * r * 0.05f, cy - r * 0.8f);
+      tlPath.lineTo(lx + dir * r * 0.05f, cy - r * 0.3f);
+      tlPath.lineTo(lx - dir * r, cy - r * 0.3f);
+      tlPath.lineTo(lx - dir * r, cy + r * 0.3f);
+      tlPath.lineTo(lx + dir * r * 0.05f, cy + r * 0.3f);
+      tlPath.lineTo(lx + dir * r * 0.05f, cy + r * 0.8f);
+      tlPath.close();
+      canvas.drawPath(tlPath, fill);
+    } else if ("uturn".equals(lamp)) {
+      labelPaint.setColor(Color.BLACK);
+      labelPaint.setFakeBoldText(true);
+      canvas.drawText("U", lx - labelPaint.measureText("U") * 0.5f, cy + SZ_LABEL * 0.36f, labelPaint);
+      labelPaint.setFakeBoldText(false);
+      labelPaint.setColor(COL_ROAD);
+    }
+    fill.setColor(COL_ROAD);
 
-    double stop = p.optDouble("stopDist", Double.NaN);
-    if (state == 1 && !Double.isNaN(stop) && stop > 0) {
-      String s = distText((int) Math.round(stop));
-      drawLabel(canvas, s, cx - labelPaint.measureText(s) * 0.5f, tlBox.bottom + SZ_LABEL + 2f, COL_DANGER);
+    // 남은 초는 등 색으로. 무엇이 몇 초 남았는지가 한 덩어리로 읽힌다.
+    signPaint.setColor(red ? COL_DANGER : COL_SYSTEM);
+    canvas.drawText(sec, lx + TL_R + 10f, cy + SZ_SIGN * 0.36f, signPaint);
+    signPaint.setColor(COL_ROAD);
+
+    if (dist > 0) {
+      String s = distText(dist);
+      drawLabel(canvas, s, proj.centerX() - labelPaint.measureText(s) * 0.5f,
+          cy + TL_R + SZ_LABEL + 4f, COL_ROAD);
     }
   }
 
