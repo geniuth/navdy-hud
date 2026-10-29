@@ -62,6 +62,14 @@ public class HudView extends View {
   /** 도착 정보. 라벨보다 1.3배. 아래쪽에 혼자 있어 작으면 안 읽힌다. */
   private static final float SZ_DEST  = 26f;
 
+  /**
+   * 좌상단 속도 묶음과 우상단 표지를 화면 가장자리에서 띄우는 거리(px).
+   *
+   * 16px 일 때 실차에서 구석에 붙어 잘 안 보였다. 표지를 10px 당긴 것으로도
+   * 모자라 양쪽 다 이만큼 안쪽으로 들인다.
+   */
+  private static final float EDGE_X = 56f;
+
   /** 제한속도를 이만큼 넘으면 속도 숫자가 주의색이 된다. GPS 오차와 계기 오차를 뺀 값. */
   private static final int OVER_MARGIN = 2;
 
@@ -229,6 +237,7 @@ public class HudView extends View {
       drawPath(canvas, p.optJSONArray("path"), p.optBoolean("enabled", false));
       drawVehicles(canvas, p);
       drawSign(canvas, p, w);
+      drawTraffic(canvas, p);
     }
     drawStatus(canvas, p);
     drawDest(canvas, p);
@@ -580,26 +589,92 @@ public class HudView extends View {
    */
   private static final float LEAD_MIN_PX = 26f;
   private static final float OTHER_MIN_PX = 20f;
-  /** 이보다 멀면 지평선에 뭉쳐 앞차와 겹친다. 그 거리에서는 알려줄 것도 없다. */
-  private static final float OTHER_MAX_M = 60f;
   /**
-   * 속도를 적어 주는 최대 거리.
+   * 이보다 멀면 지평선에 뭉쳐 앞차와 겹친다.
    *
-   * 멀리 있는 차들은 화면에서 몇 픽셀 안에 모이므로 숫자를 다 적으면
-   * 지평선이 숫자 더미가 된다. 주된 앞차는 거리와 무관하게 적는다.
+   * 검출 차량을 전부 보여 달라는 요청으로 60m 에서 늘렸다. 더 멀면 차가 몇
+   * 픽셀 안에 겹쳐 대수도 셀 수 없다.
    */
-  private static final float SPEED_LABEL_MAX_M = 45f;
+  private static final float OTHER_MAX_M = 80f;
+  /** 차 방향 한계(rad). 차선 끝 기울기가 튀어도 차가 옆으로 눕지 않게 막는다. */
+  private static final float MAX_HEADING = 0.6f;
 
   private void drawVehicles(Canvas canvas, JSONObject p) {
-    // 먼 것부터 그려 가까운 차가 위에 오게 한다.
+    // 먼 것부터 그려 가까운 차가 위에 오게 한다. 송신 쪽이 가까운 순으로 보낸다.
     JSONArray others = p.optJSONArray("others");
     if (others != null) {
-      for (int i = 0; i < others.length(); i++) {
-        drawVehicle(canvas, others.optJSONObject(i), false);
+      for (int i = others.length() - 1; i >= 0; i--) {
+        drawVehicle(canvas, others.optJSONObject(i), false, p);
       }
     }
-    drawVehicle(canvas, p.optJSONObject("lead2"), false);
-    drawVehicle(canvas, p.optJSONObject("lead"), true);
+    drawVehicle(canvas, p.optJSONObject("lead2"), false, p);
+    drawVehicle(canvas, p.optJSONObject("lead"), true, p);
+  }
+
+  /**
+   * 거리 x 에서 도로가 향하는 방향(rad, 차량 좌표). 모르면 0.
+   *
+   * 차 모델을 늘 정면으로만 그리면 커브에서 앞차가 반대로 꺾여 보인다. 원근
+   * 때문에 정면을 향한 차는 소실점(화면 가운데) 쪽으로 기우는데, 커브 길은
+   * 바깥으로 휘어 나가기 때문이다. 그 거리의 차선 기울기만큼 차를 돌려 놓으면
+   * 도로를 따라 꺾인다.
+   *
+   * 자차선 양쪽 차선이 먼저다. 경로는 차선 변경 중에 도로와 다른 쪽을 가리키므로
+   * 차선이 없을 때만 쓴다. 차선과 차가 같은 좌표계라 화면 좌우 반전과 무관하다.
+   */
+  private float roadHeading(JSONObject p, float x) {
+    float sum = 0f;
+    int n = 0;
+    JSONArray lanes = p.optJSONArray("lanes");
+    if (lanes != null) {
+      for (int i = 1; i <= 2 && i < lanes.length(); i++) {
+        JSONObject lane = lanes.optJSONObject(i);
+        if (lane == null || lane.optDouble("c", 0.0) < CONF_MIN) {
+          continue;
+        }
+        float s = slopeAt(lane.optJSONArray("p"), x);
+        if (!Float.isNaN(s)) {
+          sum += s;
+          n++;
+        }
+      }
+    }
+    if (n == 0) {
+      float s = slopeAt(p.optJSONArray("path"), x);
+      if (!Float.isNaN(s)) {
+        sum += s;
+        n++;
+      }
+    }
+    if (n == 0) {
+      return 0f;
+    }
+    float h = (float) Math.atan(sum / n);
+    return Math.max(-MAX_HEADING, Math.min(MAX_HEADING, h));
+  }
+
+  /** 폴리라인의 x 지점 기울기 dy/dx. x 가 선 끝을 넘으면 마지막 구간 기울기. */
+  private static float slopeAt(JSONArray pts, float x) {
+    if (pts == null || pts.length() < 2) {
+      return Float.NaN;
+    }
+    float px = Float.NaN, py = 0f, slope = Float.NaN;
+    for (int i = 0; i < pts.length(); i++) {
+      JSONArray pt = pts.optJSONArray(i);
+      if (pt == null || pt.length() < 2) {
+        continue;
+      }
+      float qx = (float) pt.optDouble(0, 0), qy = (float) pt.optDouble(1, 0);
+      if (!Float.isNaN(px) && qx - px > 0.1f) {
+        slope = (qy - py) / (qx - px);
+        if (x <= qx) {
+          return slope;
+        }
+      }
+      px = qx;
+      py = qy;
+    }
+    return slope;
   }
 
   /**
@@ -618,9 +693,13 @@ public class HudView extends View {
    * 차체는 급감속해도 회색으로 남고, 뒷면의 램프 띠만 빨갛게 켜진다. 차 전체를
    * 칠하면 모양이 사라져 어느 차인지보다 빨간 덩어리가 먼저 보인다.
    *
-   * @param primary 주된 앞차. 거리까지 적는다. 나머지는 속도만 적는다.
+   * 모든 차에 속도(아래)와 거리(위)를 적는다. 예전에는 주된 앞차만 거리를,
+   * 45m 안쪽 차만 속도를 적었는데 검출 차량 정보를 전부 보고 싶다는 요청으로
+   * 바꿨다.
+   *
+   * @param primary 주된 앞차. 거리와 무관하게 그리고 최소 크기가 크다.
    */
-  private void drawVehicle(Canvas canvas, JSONObject v, boolean primary) {
+  private void drawVehicle(Canvas canvas, JSONObject v, boolean primary, JSONObject p) {
     if (v == null) {
       return;
     }
@@ -642,15 +721,22 @@ public class HudView extends View {
     carAx = proj.screenX(d, lat);
     carAy = proj.screenY(d);
     carK = target / wpx;
+    // 차 한가운데 지점의 도로 방향으로 돌린다.
+    float heading = roadHeading(p, d + CAR_L * 0.5f);
+    carCos = (float) Math.cos(heading);
+    carSin = (float) Math.sin(heading);
 
     boolean braking = v.optDouble("a", 0) < -0.5;
     int color = braking ? COL_DANGER : COL_OBJECT;
 
     // 옆면은 우리 쪽을 향한 것만 보인다. 정면에 있으면 양쪽 다 안 보인다.
+    // 차가 돌아가 있으면 차 축 기준 횡위치로 따진다. 커브의 앞차는 차선 한가운데
+    // 있어도 옆면이 보인다.
+    float side = lat * carCos - d * carSin;
     float sideY = 0f;
-    if (lat + CAR_HW < -0.05f) {
+    if (side + CAR_HW < -0.05f) {
       sideY = CAR_HW;
-    } else if (lat - CAR_HW > 0.05f) {
+    } else if (side - CAR_HW > 0.05f) {
       sideY = -CAR_HW;
     }
 
@@ -731,16 +817,14 @@ public class HudView extends View {
 
     // 속도는 커서 아래. 숫자만 적는다. 단위가 붙으면 화면에 km/h 가 여럿 된다.
     int kmh = vehicleSpeed(v);
-    if (kmh >= 0 && (primary || d <= SPEED_LABEL_MAX_M)) {
+    if (kmh >= 0) {
       String s = String.valueOf(kmh);
       drawLabel(canvas, s, carAx - labelPaint.measureText(s) * 0.5f, cTop + ch + SZ_LABEL, color);
     }
 
-    // 거리는 주된 앞차만. 모든 차에 붙이면 지평선이 숫자로 덮인다.
-    if (primary) {
-      String label = distText(Math.round(d));
-      drawLabel(canvas, label, carAx - labelPaint.measureText(label) * 0.5f, hullTop - 8f, color);
-    }
+    // 거리는 차 위.
+    String label = distText(Math.round(d));
+    drawLabel(canvas, label, carAx - labelPaint.measureText(label) * 0.5f, hullTop - 8f, color);
   }
 
   // ---- 차량 3D 모델 ----
@@ -800,15 +884,22 @@ public class HudView extends View {
   private final int[] hIdx = new int[16];
   private final int[] hOut = new int[34];
 
-  // 지금 그리는 차의 위치와 배율. drawVehicle 이 채운다.
+  // 지금 그리는 차의 위치, 방향, 배율. drawVehicle 이 채운다.
   private float carD, carLat, carAx, carAy, carK;
+  private float carCos = 1f, carSin = 0f;
 
-  private float carX(float x, float y) {
-    return carAx + (proj.screenX(carD + x, carLat + y) - carAx) * carK;
+  /** 차 모델 좌표(x 앞, y 옆)를 도로 방향으로 돌렸을 때의 전방 거리. */
+  private float carWorldX(float x, float y) {
+    return carD + x * carCos - y * carSin;
   }
 
-  private float carY(float x, float z) {
-    return carAy + (proj.screenY(carD + x, z) - carAy) * carK;
+  private float carX(float x, float y) {
+    float wy = carLat + x * carSin + y * carCos;
+    return carAx + (proj.screenX(carWorldX(x, y), wy) - carAx) * carK;
+  }
+
+  private float carY(float x, float y, float z) {
+    return carAy + (proj.screenY(carWorldX(x, y), z) - carAy) * carK;
   }
 
   /** 3D 사각형 면 하나를 화면 경로로 만든다. */
@@ -816,10 +907,10 @@ public class HudView extends View {
       float x0, float y0, float z0, float x1, float y1, float z1,
       float x2, float y2, float z2, float x3, float y3, float z3) {
     p.reset();
-    p.moveTo(carX(x0, y0), carY(x0, z0));
-    p.lineTo(carX(x1, y1), carY(x1, z1));
-    p.lineTo(carX(x2, y2), carY(x2, z2));
-    p.lineTo(carX(x3, y3), carY(x3, z3));
+    p.moveTo(carX(x0, y0), carY(x0, y0, z0));
+    p.lineTo(carX(x1, y1), carY(x1, y1, z1));
+    p.lineTo(carX(x2, y2), carY(x2, y2, z2));
+    p.lineTo(carX(x3, y3), carY(x3, y3, z3));
     p.close();
   }
 
@@ -831,9 +922,9 @@ public class HudView extends View {
       float x = axleX + (float) (r * Math.cos(t));
       float z = WHEEL_R + (float) (r * Math.sin(t));
       if (i == 0) {
-        p.moveTo(carX(x, y), carY(x, z));
+        p.moveTo(carX(x, y), carY(x, y, z));
       } else {
-        p.lineTo(carX(x, y), carY(x, z));
+        p.lineTo(carX(x, y), carY(x, y, z));
       }
     }
     p.close();
@@ -866,7 +957,7 @@ public class HudView extends View {
     float top = Float.MAX_VALUE;
     for (float[] q : HULL_PTS) {
       hx[n] = carX(q[0], q[1]);
-      hy[n] = carY(q[0], q[2]);
+      hy[n] = carY(q[0], q[1], q[2]);
       top = Math.min(top, hy[n]);
       hIdx[n] = n;
       n++;
@@ -958,7 +1049,7 @@ public class HudView extends View {
    */
   /** 표지 아래 문구는 표지 중앙에 맞추되 화면 밖으로 나가지 않게 당긴다. */
   private float labelLeft(float centerX, float width, int w) {
-    return Math.min(centerX - width * 0.5f, w - 16f - width);
+    return Math.min(centerX - width * 0.5f, w - EDGE_X - width);
   }
 
   private void drawSign(Canvas canvas, JSONObject p, int w) {
@@ -970,8 +1061,9 @@ public class HudView extends View {
 
     boolean enforced = camera > 0 && dist > 0;
     int value = enforced ? camera : limit;
-    // 화면 오른쪽 끝에 너무 붙어 있어 잘 안 보인다는 실차 피드백. 10px 당긴다.
-    float cx = w - 72f, cy = proj.safeTop() + 42f;
+    // 화면 오른쪽 끝에 너무 붙어 있어 잘 안 보인다는 실차 피드백. 원 오른쪽 끝이
+    // 좌상단 속도와 같은 여백(EDGE_X)에 오게 둔다.
+    float cx = w - EDGE_X - 28f, cy = proj.safeTop() + 42f;
     float labelY = cy + 58f;
 
     if (value > 0) {
@@ -1002,6 +1094,52 @@ public class HudView extends View {
     }
   }
 
+  // ---- 4-1. 신호등 ----
+
+  /**
+   * openpilot 이 모델로 읽은 신호. 화면 위 가운데, 지평선 위 빈 하늘에 둔다.
+   *
+   * 값은 longitudinalPlan.trafficState 다. 카메라가 신호등 색을 직접 읽은 것이
+   * 아니라 주행 모델이 '여기서 선다(1)' / '이제 간다(2)' 고 판단한 결과라 노란불은
+   * 없다. 신호등 모양을 빌려 그 판단을 보여 준다.
+   *
+   * 두 칸짜리 등을 그리고 켜진 칸만 채운다. 빈 칸도 테두리는 남겨야 색이
+   * 잘 안 보일 때도 왼쪽(정지)인지 오른쪽(출발)인지로 읽힌다.
+   * 정지면 정지 지점까지 거리를 아래에 적는다.
+   */
+  private static final float TL_R = 13f;
+  private final android.graphics.RectF tlBox = new android.graphics.RectF();
+
+  private void drawTraffic(Canvas canvas, JSONObject p) {
+    int state = p.optInt("trafficState", 0);
+    if (state != 1 && state != 2) {
+      return;
+    }
+    float cx = proj.centerX(), cy = proj.safeTop() + 26f;
+    float gap = TL_R * 2.6f;
+    float redX = cx - gap * 0.5f, greenX = cx + gap * 0.5f;
+
+    stroke.setColor(COL_ROAD);
+    stroke.setAlpha(255);
+    stroke.setStrokeWidth(3f);
+    stroke.setPathEffect(null);
+    tlBox.set(redX - TL_R - 7f, cy - TL_R - 7f, greenX + TL_R + 7f, cy + TL_R + 7f);
+    canvas.drawRoundRect(tlBox, TL_R, TL_R, stroke);
+
+    stroke.setStrokeWidth(2f);
+    canvas.drawCircle(redX, cy, TL_R, stroke);
+    canvas.drawCircle(greenX, cy, TL_R, stroke);
+    fill.setColor(state == 1 ? COL_DANGER : COL_SYSTEM);
+    fill.setAlpha(255);
+    canvas.drawCircle(state == 1 ? redX : greenX, cy, TL_R - 1f, fill);
+
+    double stop = p.optDouble("stopDist", Double.NaN);
+    if (state == 1 && !Double.isNaN(stop) && stop > 0) {
+      String s = distText((int) Math.round(stop));
+      drawLabel(canvas, s, cx - labelPaint.measureText(s) * 0.5f, tlBox.bottom + SZ_LABEL + 2f, COL_DANGER);
+    }
+  }
+
   // ---- 5. 속도와 링크 상태 ----
 
   /**
@@ -1025,12 +1163,12 @@ public class HudView extends View {
       // 가리고 시선을 오래 잡는다. 색만으로도 평소와 다른 상태인 줄 안다.
       speedPaint.setTextSize(SZ_ALERT);
       speedPaint.setColor(COL_DANGER);
-      canvas.drawText("신호 끊김", 16f, top + SZ_ALERT, speedPaint);
+      canvas.drawText("신호 끊김", EDGE_X, top + SZ_ALERT, speedPaint);
       speedPaint.setTextSize(SZ_SPEED);
       speedPaint.setColor(COL_ROAD);
 
       labelPaint.setColor(COL_DANGER);
-      canvas.drawText(ago + "초 · " + linkState, 16f, top + SZ_ALERT + 26f, labelPaint);
+      canvas.drawText(ago + "초 · " + linkState, EDGE_X, top + SZ_ALERT + 26f, labelPaint);
       labelPaint.setColor(COL_ROAD);
       return;
     }
@@ -1044,8 +1182,8 @@ public class HudView extends View {
     unitPaint.setColor(over ? COL_CAUTION : COL_ROAD);
 
     String num = String.valueOf(speed);
-    canvas.drawText(num, 16f, baseline, speedPaint);
-    canvas.drawText("km/h", 16f + speedPaint.measureText(num) + 8f, baseline, unitPaint);
+    canvas.drawText(num, EDGE_X, baseline, speedPaint);
+    canvas.drawText("km/h", EDGE_X + speedPaint.measureText(num) + 8f, baseline, unitPaint);
 
     speedPaint.setColor(COL_ROAD);
     unitPaint.setColor(COL_ROAD);
@@ -1056,7 +1194,7 @@ public class HudView extends View {
     float y = baseline + SZ_SET + 6f;
     int set = p.optInt("set", 0);
     if (p.optBoolean("enabled", false) && set > 0) {
-      canvas.drawText("SET " + set, 16f, y, setPaint);
+      canvas.drawText("SET " + set, EDGE_X, y, setPaint);
     }
 
     drawNav(canvas, p, y + SZ_NAV + 6f);
@@ -1128,7 +1266,7 @@ public class HudView extends View {
     if (desired > 0) {
       sb.append("  ▼ ").append(desired);
     }
-    canvas.drawText(sb.toString(), 16f, y, navPaint);
+    canvas.drawText(sb.toString(), EDGE_X, y, navPaint);
   }
 
 }
